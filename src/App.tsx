@@ -1,27 +1,12 @@
-import { useState, useRef, useCallback, DragEvent } from 'react';
-import { 
-  FileText, 
-  Download, 
-  RefreshCw, 
-  CheckCircle, 
-  AlertCircle, 
-  X,
-  Loader2,
-  Table as TableIcon,
-  Calculator,
-  ClipboardList,
-  FileSpreadsheet,
-  TrendingDown,
-  TrendingUp,
-  DollarSign
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import * as pdfjs from 'pdfjs-dist';
-import * as XLSX from 'xlsx';
-
-// Initialize PDF.js with reliable CDN to ensure compatibility across deployments
-const pdfjsVersion = '4.10.38'; // Using a stable known version compatible with the library for CDN
-pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+// Initialize PDF.js with fallback
+const getWorkerSrc = () => {
+  try {
+    return pdfjsWorker || `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+  } catch {
+    return `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.mjs`;
+  }
+};
+pdfjs.GlobalWorkerOptions.workerSrc = getWorkerSrc();
 
 interface InventoryRow {
   articulo: string;
@@ -102,8 +87,7 @@ export default function App() {
 
       const loadingTask = pdfjs.getDocument({ 
         data: arrayBuffer,
-        cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/cmaps/`,
-        cMapPacked: true,
+        useWorkerFetch: true,
       });
 
       const pdf = await loadingTask.promise;
