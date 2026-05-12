@@ -3,8 +3,11 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
 import * as pdfjs from 'pdfjs-dist';
-// Configure PDF.js worker via CDN
-pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+// @ts-ignore
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
+
+// Configure PDF.js worker
+pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
