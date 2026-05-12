@@ -1,12 +1,27 @@
-// Initialize PDF.js with fallback
-const getWorkerSrc = () => {
-  try {
-    return pdfjsWorker || `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
-  } catch {
-    return `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.mjs`;
-  }
-};
-pdfjs.GlobalWorkerOptions.workerSrc = getWorkerSrc();
+import { useState, useRef, useCallback, DragEvent } from 'react';
+import { 
+  FileText, 
+  Download, 
+  RefreshCw, 
+  CheckCircle, 
+  AlertCircle, 
+  X,
+  Loader2,
+  Table as TableIcon,
+  Calculator,
+  ClipboardList,
+  FileSpreadsheet,
+  TrendingDown,
+  TrendingUp,
+  DollarSign
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import * as pdfjs from 'pdfjs-dist';
+import * as XLSX from 'xlsx';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+// Initialize PDF.js with bundled worker
+pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 interface InventoryRow {
   articulo: string;
@@ -87,7 +102,8 @@ export default function App() {
 
       const loadingTask = pdfjs.getDocument({ 
         data: arrayBuffer,
-        useWorkerFetch: true,
+        cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/cmaps/`,
+        cMapPacked: true,
       });
 
       const pdf = await loadingTask.promise;
