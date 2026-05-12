@@ -1,7 +1,6 @@
 
-
-
 import { useState, useRef } from 'react';
+
 import {
   FileText,
   RefreshCw,
@@ -15,14 +14,17 @@ import {
   DollarSign,
   Loader2
 } from 'lucide-react';
-  
 
 import { motion, AnimatePresence } from 'motion/react';
-import * as pdfjs from 'pdfjs-dist';
+
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf';
+
 import * as XLSX from 'xlsx';
+
 import Tesseract from 'tesseract.js';
 
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
 
 // PDF Worker
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
