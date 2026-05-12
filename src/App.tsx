@@ -19,18 +19,9 @@ import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjs from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
 
-// @ts-ignore
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
-
-// Initialize PDF.js with fallback
-const getWorkerSrc = () => {
-  try {
-    return pdfjsWorker || `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
-  } catch {
-    return `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.mjs`;
-  }
-};
-pdfjs.GlobalWorkerOptions.workerSrc = getWorkerSrc();
+// Initialize PDF.js with reliable CDN to ensure compatibility across deployments
+const pdfjsVersion = '4.10.38'; // Using a stable known version compatible with the library for CDN
+pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
 
 interface InventoryRow {
   articulo: string;
@@ -111,7 +102,8 @@ export default function App() {
 
       const loadingTask = pdfjs.getDocument({ 
         data: arrayBuffer,
-        useWorkerFetch: true,
+        cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/cmaps/`,
+        cMapPacked: true,
       });
 
       const pdf = await loadingTask.promise;
