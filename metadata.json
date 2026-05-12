@@ -1,6 +1,6 @@
 {
-  "name": "Auditor Contable de Inventarios",
-  "description": "Sistema avanzado de auditoría que extrae inventarios de PDF y genera reportes de ajustes contables en Excel (RD$)",
+  "name": "Conversor de PDF a EXCEL",
+  "description": "Sistema avanzado de conversion que extrae informacion de PDF y genera tabla en Excel",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }
