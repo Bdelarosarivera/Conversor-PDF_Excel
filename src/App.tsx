@@ -1,3 +1,6 @@
+
+
+
 import { useState, useRef } from 'react';
 import {
   FileText,
@@ -9,8 +12,10 @@ import {
   FileSpreadsheet,
   TrendingDown,
   TrendingUp,
-  DollarSign
+  DollarSign,
+  Loader2
 } from 'lucide-react';
+  
 
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjs from 'pdfjs-dist';
