@@ -1,31 +1,36 @@
-import tailwindcss from '@tailwindcss/vite';
+import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
-import {defineConfig, loadEnv} from 'vite';
 
-export default defineConfig(({mode}) => {
-  const env = loadEnv(mode, '.', '');
+// IMPORTANTE:
+// Cambia este nombre EXACTAMENTE por el nombre de tu repositorio en GitHub
+const REPO_NAME = 'Conversor-PDF_Excel';
 
-  const repoName = process.env.GITHUB_REPOSITORY
-    ? process.env.GITHUB_REPOSITORY.split('/')[1]
-    : undefined;
-  const base = repoName ? `/${repoName}/` : '/';
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
 
-  return {
-    plugins: [react(), tailwindcss()],
-    base,
+  // SOLUCIÓN PARA GITHUB PAGES
+  base: `/${REPO_NAME}/`,
 
-    define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, '.'),
     },
-    resolve: {
-      alias: {
-        '@': path.resolve(__dirname, '.'),
-      },
-    },
-    server: {
-      hmr: process.env.DISABLE_HMR !== 'true',
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
-    },
-  };
+  },
+
+  define: {
+    global: 'globalThis',
+  },
+
+  build: {
+    outDir: 'dist',
+    sourcemap: false,
+    chunkSizeWarningLimit: 2000,
+  },
+
+  server: {
+    host: '0.0.0.0',
+    port: 3000,
+  },
 });
