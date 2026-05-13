@@ -104,19 +104,23 @@ export default function App() {
   // OCR MEJORADO - EJECUTA SIEMPRE
   // ======================================================== // ========================================================
 
-  
 const runOCR = async (
   canvas: HTMLCanvasElement
 ): Promise<string> => {
   try {
-    const result =
-      await Tesseract.recognize(
-        canvas,
+    const worker =
+      await Tesseract.createWorker(
         'spa',
+        1,
         {
           langPath: `${import.meta.env.BASE_URL}tessdata`,
         }
       );
+
+    const result =
+      await worker.recognize(canvas);
+
+    await worker.terminate();
 
     return result.data.text;
   } catch (error) {
@@ -128,7 +132,6 @@ const runOCR = async (
     return '';
   }
 };
-
 
 
   // ======================================================== // ========================================================
