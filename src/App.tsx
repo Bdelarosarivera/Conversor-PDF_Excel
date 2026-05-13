@@ -101,46 +101,41 @@ export default function App() {
   };
 
   // ========================================================
-  // OCR LOCAL
+  // OCR MEJORADO - EJECUTA SIEMPRE
   // ========================================================
-  const runOCR = async (canvas: HTMLCanvasElement) => {
-    const result = await Tesseract.recognize(canvas, 'spa', {
-      langPath: '/Conversor-PDF_Excel/tessdata',
-    });
-    return result.data.text;
+  const runOCR = async (canvas: HTMLCanvasElement): Promise<string> => {
+    try {
+      const result = await Tesseract.recognize(canvas, 'spa', {
+        langPath: '/Conversor-PDF_Excel/tessdata',
+        logger: (m) => {
+          if (m.status === 'recognizing text') {
+            console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
+          }
+        },
+      });
+      return result.data.text;
+    } catch (error) {
+      console.error('Error en OCR:', error);
+      return '';
+    }
   };
 
   // ========================================================
-  // PROCESAR PDF
+  // EXTRAER TEXTO NATIVO DE PDF
   // ========================================================
-  const processPDF = async (pdfFile: File) => {
-    setState({
-      isProcessing: true,
-      progress: 0,
-      message: 'Procesando PDF...',
-    });
-    setInventoryData([]);
+  const extractNativeText = async (
+    pdf: any,
+    totalPages: number
+  ): Promise<string[][]> => {
+    const extractedRows: string[][] = [];
 
-    try {
-      const arrayBuffer = await pdfFile.arrayBuffer();
-      if (arrayBuffer.byteLength === 0) {
-        throw new Error('PDF vacío');
-      }
+    for (let i = 1; i <= totalPages; i++) {
+      updateProgress(
+        (i / totalPages) * 30,
+        `Extrayendo texto nativo página ${i} de ${totalPages}`
+      );
 
-      const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
-      const pdf = await loadingTask.promise;
-      const totalPages = pdf.numPages;
-      let extractedRows: string[][] = [];
-
-      // ===================================================
-      // EXTRAER TEXTO NORMAL
-      // ===================================================
-      for (let i = 1; i <= totalPages; i++) {
-        updateProgress(
-          (i / totalPages) * 40,
-          `Leyendo página ${i} de ${totalPages}`
-        );
-
+      try {
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
         const items = textContent.items as any[];
@@ -154,94 +149,200 @@ export default function App() {
           if (split.length >= 2) {
             extractedRows.push(split);
           } else {
-            extractedRows.push([text, text]);
+            extractedRows.push([text]);
           }
         });
+      } catch (error) {
+        console.error(`Error extrayendo texto página ${i}:`, error);
       }
+    }
 
-      // ===================================================
-      // OCR SI NO HAY TEXTO
-      // ===================================================
-      if (extractedRows.length < 10) {
-        updateProgress(50, 'PDF escaneado detectado. Ejecutando OCR...');
+    return extractedRows;
+  };
 
-        for (let i = 1; i <= totalPages; i++) {
-          updateProgress(
-            50 + (i / totalPages) * 40,
-            `OCR página ${i} de ${totalPages}`
-          );
+  // ========================================================
+  // EXTRAER TEXTO CON OCR - SIEMPRE SE EJECUTA
+  // ========================================================
+  const extractOCRText = async (
+    pdf: any,
+    totalPages: number
+  ): Promise<string[][]> => {
+    const extractedRows: string[][] = [];
 
-          const page = await pdf.getPage(i);
-          const viewport = page.getViewport({ scale: 2 });
-          const canvas = document.createElement('canvas');
-          const context = canvas.getContext('2d');
-          if (!context) continue;
+    for (let i = 1; i <= totalPages; i++) {
+      updateProgress(
+        30 + (i / totalPages) * 60,
+        `Procesando OCR página ${i} de ${totalPages}`
+      );
 
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
+      try {
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 2.5 }); // Mayor escala para mejor OCR
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        if (!context) continue;
 
-          await page.render({
-            canvasContext: context as any,
-            viewport,
-          } as any).promise;
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
 
-          const text = await runOCR(canvas);
-          const lines = text.split('\n');
+        await page.render({
+          canvasContext: context as any,
+          viewport,
+        } as any).promise;
 
-          lines.forEach((line) => {
-            const clean = line.trim();
-            if (clean.length < 3) return;
+        const text = await runOCR(canvas);
+        const lines = text.split('\n');
 
-            const split = clean.split(/\s{2,}/);
-            if (split.length >= 2) {
-              extractedRows.push(split);
-            } else {
-              extractedRows.push([clean, clean]);
-            }
-          });
+        lines.forEach((line) => {
+          const clean = line.trim();
+          if (clean.length < 3) return;
+
+          const split = clean.split(/\s{2,}/);
+          if (split.length >= 2) {
+            extractedRows.push(split);
+          } else if (clean.length > 0) {
+            extractedRows.push([clean]);
+          }
+        });
+      } catch (error) {
+        console.error(`Error en OCR página ${i}:`, error);
+      }
+    }
+
+    return extractedRows;
+  };
+
+  // ========================================================
+  // COMBINAR RESULTADOS DE AMBOS MÉTODOS
+  // ========================================================
+  const combineResults = (
+    nativeText: string[][],
+    ocrText: string[][]
+  ): string[][] => {
+    // Si hay texto nativo abundante, úsalo como base
+    if (nativeText.length > 20) {
+      console.log('Usando texto nativo como base principal');
+      // Agregar datos de OCR que no estén duplicados
+      const combined = [...nativeText];
+      ocrText.forEach((ocrRow) => {
+        const ocrString = ocrRow.join(' ');
+        const exists = nativeText.some((nativeRow) =>
+          nativeRow.join(' ').includes(ocrString.substring(0, 20))
+        );
+        if (!exists && ocrString.length > 5) {
+          combined.push(ocrRow);
         }
+      });
+      return combined;
+    }
+
+    // Si el OCR tiene más datos, úsalo
+    if (ocrText.length > nativeText.length) {
+      console.log('Usando OCR como base principal');
+      return ocrText;
+    }
+
+    // Combinar ambos
+    console.log('Combinando ambas fuentes de datos');
+    return [...nativeText, ...ocrText];
+  };
+
+  // ========================================================
+  // PROCESAR PDF - MODO UNIVERSAL
+  // ========================================================
+  const processPDF = async (pdfFile: File) => {
+    setState({
+      isProcessing: true,
+      progress: 0,
+      message: 'Inicializando procesamiento universal...',
+    });
+    setInventoryData([]);
+
+    try {
+      const arrayBuffer = await pdfFile.arrayBuffer();
+      if (arrayBuffer.byteLength === 0) {
+        throw new Error('PDF vacío');
       }
 
+      const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
+      const pdf = await loadingTask.promise;
+      const totalPages = pdf.numPages;
+
+      updateProgress(5, `PDF cargado: ${totalPages} páginas detectadas`);
+
       // ===================================================
-      // VALIDAR DATOS
+      // MÉTODO 1: EXTRAER TEXTO NATIVO
       // ===================================================
-      if (extractedRows.length === 0) {
-        throw new Error('No se encontró texto legible dentro del PDF.');
+      const nativeTextRows = await extractNativeText(pdf, totalPages);
+      console.log(`Texto nativo extraído: ${nativeTextRows.length} filas`);
+
+      // ===================================================
+      // MÉTODO 2: EJECUTAR OCR (SIEMPRE)
+      // ===================================================
+      const ocrTextRows = await extractOCRText(pdf, totalPages);
+      console.log(`OCR completado: ${ocrTextRows.length} filas`);
+
+      // ===================================================
+      // COMBINAR RESULTADOS
+      // ===================================================
+      updateProgress(95, 'Combinando resultados...');
+      const combinedRows = combineResults(nativeTextRows, ocrTextRows);
+
+      console.log(`Total de filas combinadas: ${combinedRows.length}`);
+
+      if (combinedRows.length === 0) {
+        throw new Error(
+          'No se pudo extraer ningún dato del PDF. Verifica que el archivo contenga texto o imágenes legibles.'
+        );
       }
 
       // ===================================================
       // CREAR INVENTARIO
       // ===================================================
-      const processedInventory: InventoryRow[] = extractedRows
+      const processedInventory: InventoryRow[] = combinedRows
         .map((row, index) => {
           const numbers = row
             .map((r) => cleanNumber(r))
-            .filter((n) => !isNaN(n));
+            .filter((n) => !isNaN(n) && n > 0);
+
+          const descripcion = row
+            .filter((r) => isNaN(parseFloat(r)))
+            .join(' ')
+            .trim();
+
+          // Solo procesar si hay descripción válida
+          if (descripcion.length < 3) return null;
 
           return {
-            articulo: `ITEM-${index + 1}`,
-            descripcion: row.join(' '),
+            articulo: `ITEM-${String(index + 1).padStart(4, '0')}`,
+            descripcion: descripcion,
             unidad: 'UND',
             cantidadFisica: numbers[0] || 0,
-            cantidadTeorica: numbers[1] || 0,
+            cantidadTeorica: numbers[1] || numbers[0] || 0,
             costoUnitario: numbers[2] || 0,
             familia: 'General',
             clasificacion: 'A',
             marca: 'N/A',
-            referencia: `REF-${index + 1}`,
+            referencia: `REF-${String(index + 1).padStart(4, '0')}`,
             ubicacion: 'Almacén',
           };
         })
-        .filter((item) => item.descripcion.trim().length > 3);
+        .filter((item): item is InventoryRow => item !== null);
 
       if (processedInventory.length === 0) {
-        throw new Error('No se pudo interpretar el PDF.');
+        throw new Error(
+          'No se pudieron interpretar los datos del PDF. Intenta con un archivo más claro.'
+        );
       }
 
+      updateProgress(100, 'Procesamiento completado');
       setInventoryData(processedInventory);
-      showToast('PDF procesado correctamente', 'success');
+      showToast(
+        `PDF procesado: ${processedInventory.length} artículos encontrados`,
+        'success'
+      );
     } catch (err: any) {
-      console.error(err);
+      console.error('Error procesando PDF:', err);
       showToast(err.message || 'Error procesando PDF', 'error');
     } finally {
       setState((prev) => ({ ...prev, isProcessing: false }));
@@ -253,7 +354,7 @@ export default function App() {
   // ========================================================
   const handleFile = (file: File) => {
     if (file.type !== 'application/pdf') {
-      showToast('Por favor selecciona un PDF.', 'error');
+      showToast('Por favor selecciona un archivo PDF válido.', 'error');
       return;
     }
     setFile(file);
@@ -265,6 +366,7 @@ export default function App() {
   // ========================================================
   const downloadExcel = () => {
     if (inventoryData.length === 0) {
+      showToast('No hay datos para exportar', 'warning');
       return;
     }
 
@@ -319,10 +421,10 @@ export default function App() {
         `Inventario_Contable_${new Date().toISOString().split('T')[0]}.xlsx`
       );
 
-      showToast('Reporte generado correctamente.', 'success');
+      showToast('Reporte Excel generado correctamente', 'success');
     } catch (e) {
-      console.error(e);
-      showToast('Error al exportar Excel.', 'error');
+      console.error('Error exportando Excel:', e);
+      showToast('Error al exportar Excel', 'error');
     }
   };
 
@@ -331,8 +433,7 @@ export default function App() {
   // ========================================================
   const totalAjuste = inventoryData.reduce(
     (acc, curr) =>
-      acc +
-      (curr.cantidadFisica - curr.cantidadTeorica) * curr.costoUnitario,
+      acc + (curr.cantidadFisica - curr.cantidadTeorica) * curr.costoUnitario,
     0
   );
 
@@ -352,10 +453,10 @@ export default function App() {
               <div className="p-2 bg-indigo-600 rounded-lg text-white">
                 <Calculator className="w-6 h-6" />
               </div>
-              <h1 className="text-3xl font-black">Auditor Contable</h1>
+              <h1 className="text-3xl font-black">Auditor Contable Pro</h1>
             </div>
             <p className="text-slate-500 font-semibold text-sm">
-              Sistema de Procesamiento Inventario
+              Sistema de Procesamiento Universal de Inventario (OCR + Texto)
             </p>
           </div>
         </motion.div>
@@ -390,9 +491,14 @@ export default function App() {
                   <FileText className="w-12 h-12" />
                 </div>
                 <h3 className="text-2xl font-black mb-2">
-                  Cargar Inventario
+                  Cargar Inventario PDF
                 </h3>
-                <p className="text-slate-500">Selecciona un PDF</p>
+                <p className="text-slate-500 mb-2">
+                  Procesamiento Universal: Texto + OCR
+                </p>
+                <p className="text-slate-400 text-sm">
+                  ✓ PDFs nativos | ✓ PDFs escaneados | ✓ Imágenes
+                </p>
               </div>
             </div>
           )}
@@ -405,6 +511,14 @@ export default function App() {
                 <p className="text-slate-400">
                   {Math.round(state.progress)}%
                 </p>
+              </div>
+              <div className="w-full max-w-md bg-slate-200 rounded-full h-3 overflow-hidden">
+                <motion.div
+                  className="bg-indigo-600 h-full"
+                  initial={{ width: '0%' }}
+                  animate={{ width: `${state.progress}%` }}
+                  transition={{ duration: 0.3 }}
+                />
               </div>
             </div>
           )}
@@ -421,7 +535,7 @@ export default function App() {
                 <div className="bg-indigo-600 text-white p-6 rounded-2xl">
                   <div className="text-xs uppercase mb-2">Ajuste Neto</div>
                   <div className="text-2xl font-black">
-                    {totalAjuste.toLocaleString()}
+                    RD$ {totalAjuste.toLocaleString()}
                   </div>
                 </div>
                 <div className="bg-emerald-500 text-white p-6 rounded-2xl">
@@ -450,11 +564,12 @@ export default function App() {
                 <div className="flex-1 bg-white border border-slate-200 rounded-3xl p-8">
                   <div className="flex items-center gap-3 mb-6">
                     <ClipboardList className="text-indigo-600 w-6 h-6" />
-                    <h4 className="font-black">Auditoría</h4>
+                    <h4 className="font-black">Datos de Auditoría</h4>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                     <input
                       type="text"
+                      placeholder="Realizado por"
                       value={formulario.realizadoPor}
                       onChange={(e) =>
                         setFormulario({
@@ -476,6 +591,8 @@ export default function App() {
                     >
                       <option>Cuadre de Inventario</option>
                       <option>Auditoría Sorpresiva</option>
+                      <option>Revisión Trimestral</option>
+                      <option>Cierre de Año</option>
                     </select>
                   </div>
                 </div>
@@ -483,8 +600,9 @@ export default function App() {
                 <div className="w-full lg:w-80 flex flex-col gap-4">
                   <button
                     onClick={downloadExcel}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl p-6 font-black transition"
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl p-6 font-black transition flex items-center justify-center gap-2"
                   >
+                    <FileSpreadsheet className="w-5 h-5" />
                     Generar Excel
                   </button>
                   <button
@@ -492,11 +610,69 @@ export default function App() {
                       setFile(null);
                       setInventoryData([]);
                     }}
-                    className="border rounded-2xl p-4"
+                    className="border border-slate-300 hover:border-indigo-500 rounded-2xl p-4 transition"
                   >
-                    Nuevo Proceso
+                    🔄 Nuevo Proceso
                   </button>
                 </div>
+              </div>
+
+              {/* Preview de datos */}
+              <div className="bg-slate-50 rounded-2xl p-6">
+                <h4 className="font-black mb-4">
+                  📋 Vista Previa (Primeros 5 registros)
+                </h4>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-900 text-white">
+                      <tr>
+                        <th className="p-3 text-left">Artículo</th>
+                        <th className="p-3 text-left">Descripción</th>
+                        <th className="p-3 text-right">Cant. Física</th>
+                        <th className="p-3 text-right">Cant. Teórica</th>
+                        <th className="p-3 text-right">Diferencia</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {inventoryData.slice(0, 5).map((item, idx) => (
+                        <tr
+                          key={idx}
+                          className="border-b border-slate-200 hover:bg-white"
+                        >
+                          <td className="p-3 font-mono text-xs">
+                            {item.articulo}
+                          </td>
+                          <td className="p-3">{item.descripcion}</td>
+                          <td className="p-3 text-right">
+                            {item.cantidadFisica}
+                          </td>
+                          <td className="p-3 text-right">
+                            {item.cantidadTeorica}
+                          </td>
+                          <td
+                            className={`p-3 text-right font-bold ${
+                              item.cantidadFisica - item.cantidadTeorica > 0
+                                ? 'text-emerald-600'
+                                : item.cantidadFisica - item.cantidadTeorica < 0
+                                ? 'text-rose-600'
+                                : 'text-slate-600'
+                            }`}
+                          >
+                            {item.cantidadFisica - item.cantidadTeorica > 0
+                              ? '+'
+                              : ''}
+                            {item.cantidadFisica - item.cantidadTeorica}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {inventoryData.length > 5 && (
+                  <p className="text-slate-400 text-sm mt-4 text-center">
+                    ... y {inventoryData.length - 5} artículos más
+                  </p>
+                )}
               </div>
             </div>
           )}
