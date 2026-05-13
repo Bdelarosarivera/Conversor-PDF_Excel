@@ -143,7 +143,7 @@ export default function App() {
       canvas,
       'spa',
       {
-        langPath: '/Conversor-PDF_Excel/tessdata'
+        langPath: 'https://tessdata.projectnaptha.com/4.0.0'
       }
     );
 
