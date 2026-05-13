@@ -160,13 +160,11 @@ export default function App() {
       }
 
       // Secondary Extraction: OCR Fallback for Scanned PDF
-      
-        if (allExtractedRows.length < 5) {
-
-            throw new Error(
-                'Este PDF parece escaneado o no contiene texto seleccionable.'
-           );
-      }
+      if (allExtractedRows.length < 5) {
+  throw new Error(
+    'Este PDF no contiene texto seleccionable o está escaneado.'
+  );
+}
         updateProgress(50, "Buscando texto en imagen (OCR activo)...");
         const worker = await createWorker('eng'); // Spanish
        
