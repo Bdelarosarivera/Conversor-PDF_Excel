@@ -19,10 +19,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjs from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
 import { createWorker } from 'tesseract.js';
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+// Worker configured once in main.tsx — no re-import needed here.
 
-// Initialize PDF.js with bundled worker
-pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 interface InventoryRow {
   articulo: string;
