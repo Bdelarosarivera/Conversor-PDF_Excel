@@ -118,184 +118,242 @@ export default function App() {
   // =========================================================
   // PROCESAR PDF
   // =========================================================
+const processPDF = async (pdfFile: File) => {
 
-  const processPDF = async (
-    pdfFile: File
-  ) => {
-    setState({
-      isProcessing: true,
-      progress: 0,
-      message:
-        'Analizando estructura contable...'
+  setState({
+    isProcessing: true,
+    progress: 0,
+    message: 'Analizando estructura contable...'
+  });
+
+  setInventoryData([]);
+
+  let worker: any = null;
+
+  try {
+
+    const arrayBuffer = await pdfFile.arrayBuffer();
+
+    if (arrayBuffer.byteLength === 0) {
+      throw new Error('El archivo PDF está vacío.');
+    }
+
+    const loadingTask = pdfjs.getDocument({
+      data: arrayBuffer,
+      cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/cmaps/`,
+      cMapPacked: true,
     });
 
-    setInventoryData([]);
+    const pdf = await loadingTask.promise;
 
-    try {
-      const arrayBuffer =
-        await pdfFile.arrayBuffer();
+    const totalPages = pdf.numPages;
 
-      if (arrayBuffer.byteLength === 0) {
-        throw new Error(
-          'El archivo PDF está vacío.'
-        );
-      }
+    let allExtractedRows: string[][] = [];
 
-      const loadingTask = pdfjs.getDocument({
-        data: arrayBuffer
-      });
+    const ROW_TOLERANCE = 3;
 
-      const pdf = await loadingTask.promise;
+    // =========================================
+    // EXTRACCIÓN NORMAL
+    // =========================================
 
-      const totalPages = pdf.numPages;
+    for (let i = 1; i <= totalPages; i++) {
 
-      let allExtractedRows: string[][] = [];
+      updateProgress(
+        (i / totalPages) * 40,
+        `Leyendo página ${i} de ${totalPages}...`
+      );
 
-      const ROW_TOLERANCE = 3;
+      const page = await pdf.getPage(i);
 
-      // =========================================================
-      // EXTRACCIÓN NORMAL
-      // =========================================================
+      const textContent = await page.getTextContent();
 
-      for (
-        let i = 1;
-        i <= totalPages;
-        i++
-      ) {
-        updateProgress(
-          (i / totalPages) * 100,
-          `Auditando página ${i} de ${totalPages}...`
-        );
+      const rows: { y: number; items: any[] }[] = [];
 
-        const page =
-          await pdf.getPage(i);
+      textContent.items.forEach((item: any) => {
 
-        const textContent =
-          await page.getTextContent();
+        if ('transform' in item) {
 
-        const rows: {
-          y: number;
-          items: any[];
-        }[] = [];
+          const y = item.transform[5];
 
-        textContent.items.forEach(
-          (item: any) => {
-            if ('transform' in item) {
-              const y =
-                item.transform[5];
-
-              let foundRow =
-                rows.find(
-                  r =>
-                    Math.abs(r.y - y) <=
-                    ROW_TOLERANCE
-                );
-
-              if (!foundRow) {
-                foundRow = {
-                  y,
-                  items: []
-                };
-
-                rows.push(foundRow);
-              }
-
-              foundRow.items.push(item);
-            }
-          }
-        );
-
-        rows.sort((a, b) => b.y - a.y);
-
-        rows.forEach(row => {
-          const items = row.items.sort(
-            (a, b) =>
-              a.transform[4] -
-              b.transform[4]
+          let foundRow = rows.find(
+            r => Math.abs(r.y - y) <= ROW_TOLERANCE
           );
 
-          if (items.length === 0) {
-            return;
+          if (!foundRow) {
+
+            foundRow = {
+              y,
+              items: []
+            };
+
+            rows.push(foundRow);
           }
 
-          const rowData: string[] = [];
+          foundRow.items.push(item);
+        }
+      });
 
-          let currentStr =
-            items[0].str;
+      rows.sort((a, b) => b.y - a.y);
 
-          let lastX =
-            items[0].transform[4] +
-            (items[0].width || 0);
+      rows.forEach(row => {
 
-          for (
-            let j = 1;
-            j < items.length;
-            j++
-          ) {
-            const it = items[j];
-
-            const gap =
-              it.transform[4] - lastX;
-
-            const minGap = it.height
-              ? it.height * 0.4
-              : 8;
-
-            if (gap > minGap) {
-              rowData.push(
-                currentStr.trim()
-              );
-
-              currentStr = it.str;
-            } else {
-              currentStr +=
-                (currentStr.endsWith(
-                  ' '
-                ) ||
-                it.str.startsWith(' ')
-                  ? ''
-                  : ' ') + it.str;
-            }
-
-            lastX =
-              it.transform[4] +
-              (it.width || 0);
-          }
-
-          rowData.push(currentStr.trim());
-
-          if (
-            rowData.some(
-              cell => cell.length > 0
-            )
-          ) {
-            allExtractedRows.push(
-              rowData
-            );
-          }
-        });
-      }
-
-      // =========================================================
-      // VALIDAR DATOS EXTRAIDOS
-      // =========================================================
-
-      if (allExtractedRows.length === 0) {
-        throw new Error(
-          'No se encontró texto legible dentro del PDF.'
+        const items = row.items.sort(
+          (a, b) => a.transform[4] - b.transform[4]
         );
+
+        if (items.length === 0) return;
+
+        const rowData: string[] = [];
+
+        let currentStr = items[0].str;
+
+        let lastX =
+          items[0].transform[4] +
+          (items[0].width || 0);
+
+        for (let j = 1; j < items.length; j++) {
+
+          const it = items[j];
+
+          const gap = it.transform[4] - lastX;
+
+          const minGap = it.height
+            ? it.height * 0.4
+            : 8;
+
+          if (gap > minGap) {
+
+            rowData.push(currentStr.trim());
+
+            currentStr = it.str;
+
+          } else {
+
+            currentStr +=
+              (currentStr.endsWith(' ') ||
+              it.str.startsWith(' ')
+                ? ''
+                : ' ') + it.str;
+          }
+
+          lastX =
+            it.transform[4] +
+            (it.width || 0);
+        }
+
+        rowData.push(currentStr.trim());
+
+        if (
+          rowData.some(cell => cell.length > 0)
+        ) {
+          allExtractedRows.push(rowData);
+        }
+      });
+    }
+
+    // =========================================
+    // OCR SI NO HAY TEXTO
+    // =========================================
+
+    if (allExtractedRows.length < 5) {
+
+      updateProgress(
+        45,
+        'Activando OCR para PDF escaneado...'
+      );
+
+      worker = await createWorker('eng');
+
+      const maxPages = Math.min(totalPages, 3);
+
+      for (let i = 1; i <= maxPages; i++) {
+
+        updateProgress(
+          45 + (i / maxPages) * 45,
+          `Procesando OCR página ${i}...`
+        );
+
+        try {
+
+          const page = await pdf.getPage(i);
+
+          const viewport = page.getViewport({
+            scale: 2.5
+          });
+
+          const canvas =
+            document.createElement('canvas');
+
+          const context =
+            canvas.getContext('2d');
+
+          if (!context) continue;
+
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+
+          await page.render({
+            canvasContext: context as any,
+            viewport
+          } as any).promise;
+
+          const result = await worker.recognize(canvas);
+
+          const text =
+            result.data.text || '';
+
+          const lines = text.split('\n');
+
+          lines.forEach(line => {
+
+            const cleanLine = line.trim();
+
+            if (cleanLine.length < 5) return;
+
+            const rowData =
+              cleanLine.split(/\s{2,}/);
+
+            if (rowData.length >= 2) {
+
+              allExtractedRows.push(rowData);
+            }
+          });
+
+        } catch (ocrError) {
+
+          console.error(
+            'Error OCR página:',
+            i,
+            ocrError
+          );
+        }
       }
+    }
 
-      // =========================================================
-      // MAPEO INVENTARIO
-      // =========================================================
+    // =========================================
+    // VALIDAR DATOS
+    // =========================================
 
-      const processedInventory: InventoryRow[] =
-        allExtractedRows
-          .filter(row => row.length >= 2)
+    if (allExtractedRows.length === 0) {
 
-          .map(row => {
-            const numericCells = row
+      throw new Error(
+        'No se encontró texto legible dentro del PDF.'
+      );
+    }
+
+    // =========================================
+    // MAPEO INVENTARIO
+    // =========================================
+
+    const processedInventory: InventoryRow[] =
+      allExtractedRows
+
+        .filter(row => row.length >= 2)
+
+        .map(row => {
+
+          const numericCells =
+            row
               .map(c => ({
                 original: c,
                 val: cleanNumber(c)
@@ -309,96 +367,96 @@ export default function App() {
                   )
               );
 
-            return {
-              articulo:
-                row[0] || 'N/A',
+          return {
 
-              descripcion:
-                row[1] ||
-                'Sin descripción',
+            articulo:
+              row[0] || 'N/A',
 
-              unidad:
-                row.find(c =>
-                  /^(UND|PCS|CAJA|KG|LBS|GR|UD|UNID|PAQUETE)$/i.test(
-                    c.trim()
-                  )
-                ) || 'UND',
+            descripcion:
+              row[1] ||
+              'Sin descripción',
 
-              cantidadFisica:
-                numericCells[0]?.val ||
-                0,
+            unidad:
+              row.find(c =>
+                /^(UND|PCS|CAJA|KG|LBS|GR|UD|UNID)$/i.test(
+                  c.trim()
+                )
+              ) || 'UND',
 
-              cantidadTeorica:
-                numericCells[1]?.val ||
-                numericCells[0]?.val ||
-                0,
+            cantidadFisica:
+              numericCells[0]?.val || 0,
 
-              costoUnitario:
-                numericCells[
-                  numericCells.length - 1
-                ]?.val || 0,
+            cantidadTeorica:
+              numericCells[1]?.val ||
+              numericCells[0]?.val ||
+              0,
 
-              familia: 'General',
+            costoUnitario:
+              numericCells[
+                numericCells.length - 1
+              ]?.val || 0,
 
-              clasificacion: 'A',
+            familia: 'General',
 
-              marca: 'Varios',
+            clasificacion: 'A',
 
-              referencia:
-                row[0] || '',
+            marca: 'Varios',
 
-              ubicacion:
-                'Almacén Central'
-            };
-          })
+            referencia:
+              row[0] || '',
 
-          .filter(
-            item =>
-              !/^(Articulo|Item|Codigo|Cant|Costo|Total|Descripcion|Fecha|Pagina)$/i.test(
-                item.articulo
-              ) &&
-              item.articulo.length > 1
-          );
+            ubicacion:
+              'Almacén Central'
+          };
+        })
 
-      if (
-        processedInventory.length === 0
-      ) {
-        throw new Error(
-          'No se pudo interpretar el inventario.'
+        .filter(item =>
+          item.articulo.length > 1
         );
-      }
 
-      setInventoryData(
-        processedInventory
+    if (processedInventory.length === 0) {
+
+      throw new Error(
+        'No se pudo interpretar el inventario.'
       );
-
-      showToast(
-        '¡Auditoría completada satisfactoriamente!',
-        'success'
-      );
-    } catch (err: any) {
-      console.error(err);
-
-      let msg =
-        err.message ||
-        'Error al procesar el inventario.';
-
-      if (
-        err.name ===
-        'InvalidPDFException'
-      ) {
-        msg =
-          'El archivo PDF está corrupto o no es válido.';
-      }
-
-      showToast(msg, 'error');
-    } finally {
-      setState(prev => ({
-        ...prev,
-        isProcessing: false
-      }));
     }
-  };
+
+    setInventoryData(processedInventory);
+
+    showToast(
+      '¡Auditoría completada!',
+      'success'
+    );
+
+  } catch (err: any) {
+
+    console.error(err);
+
+    showToast(
+      err.message || 'Error procesando PDF',
+      'error'
+    );
+
+  } finally {
+
+    if (worker) {
+
+      try {
+
+        await worker.terminate();
+
+      } catch (e) {
+
+        console.error(e);
+      }
+    }
+
+    setState(prev => ({
+      ...prev,
+      isProcessing: false
+    }));
+  }
+};
 
   // =========================================================
   // MANEJO ARCHIVO
