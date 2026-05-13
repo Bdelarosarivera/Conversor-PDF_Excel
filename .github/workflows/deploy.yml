@@ -41,6 +41,7 @@ jobs:
         run: npm run build
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
