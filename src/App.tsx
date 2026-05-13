@@ -160,10 +160,16 @@ export default function App() {
       }
 
       // Secondary Extraction: OCR Fallback for Scanned PDF
-      if (allExtractedRows.length < 5) {
+      
+        if (allExtractedRows.length < 5) {
+
+            throw new Error(
+                'Este PDF parece escaneado o no contiene texto seleccionable.'
+           );
+      }
         updateProgress(50, "Buscando texto en imagen (OCR activo)...");
-        const worker = await createWorker('spa'); // Spanish
-        
+        const worker = await createWorker('eng'); // Spanish
+       
         for (let i = 1; i <= totalPages; i++) {
           updateProgress(50 + (i / totalPages) * 50, `Procesando imagen pág ${i}...`);
           const page = await pdf.getPage(i);
@@ -178,7 +184,7 @@ export default function App() {
               canvasContext: context as any, 
               viewport: viewport 
             } as any).promise;
-            const { data: { text } } = await worker.recognize(canvas);
+            const { data: { text } } = await worker.recognize(canvas, {}, { text: true });
             
             // Convert OCR text block to rows
             const lines = text.split('\n');
