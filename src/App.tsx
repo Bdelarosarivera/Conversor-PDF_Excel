@@ -118,18 +118,16 @@ export default function App() {
   // LIMPIAR NUMERO
   // =========================================================
 
-  const cleanNumber = (val: string): number => {
-    if (!val) return 0;
+import { createWorker } from 'tesseract.js';
 
-    const cleaned = val
-      .replace(/[^\d.,-]/g, '')
-      .replace(/,/g, '');
+const worker = await createWorker('spa', 1, {
+  logger: m => console.log(m),
+  langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+});
 
-    const num = parseFloat(cleaned);
+  
 
-    return isNaN(num) ? 0 : num;
-  };
-
+  
   // =========================================================
   // OCR LOCAL
   // =========================================================
