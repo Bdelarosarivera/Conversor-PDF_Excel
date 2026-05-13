@@ -5,10 +5,7 @@ import {
   CheckCircle,
   AlertCircle,
   Calculator,
-  ClipboardList,
-  FileSpreadsheet,
-  TrendingDown,
-  TrendingUp
+  ClipboardList
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'motion/react';
@@ -18,10 +15,18 @@ import * as XLSX from 'xlsx';
 
 import Tesseract from 'tesseract.js';
 
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+// =========================================================
+// PDF.JS WORKER
+// =========================================================
 
-// CONFIGURAR PDF.JS
-pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url
+).toString();
+
+// =========================================================
+// TYPES
+// =========================================================
 
 interface InventoryRow {
   articulo: string;
@@ -52,21 +57,27 @@ interface ProcessState {
   isProcessing: boolean;
 }
 
-export default function App() {
-  const [file, setFile] = useState<File | null>(null);
+// =========================================================
+// APP
+// =========================================================
 
-  const [inventoryData, setInventoryData] = useState<
-    InventoryRow[]
-  >([]);
+export default function App() {
+  const [file, setFile] =
+    useState<File | null>(null);
+
+  const [inventoryData, setInventoryData] =
+    useState<InventoryRow[]>([]);
 
   const [formulario, setFormulario] =
     useState<FormularioAjuste>({
       fecha: new Date().toLocaleDateString(),
-      realizadoPor: 'Generado por Sistema',
+      realizadoPor:
+        'Generado por Sistema',
       areas: 'General',
       motivo: 'Cuadre de Inventario',
       problemas: 'N/A',
-      planAccion: 'Sincronización de stock'
+      planAccion:
+        'Sincronización de stock'
     });
 
   const [state, setState] =
@@ -76,10 +87,14 @@ export default function App() {
       isProcessing: false
     });
 
-  const [toast, setToast] = useState<{
-    message: string;
-    type: 'success' | 'error' | 'info';
-  } | null>(null);
+  const [toast, setToast] =
+    useState<{
+      message: string;
+      type:
+        | 'success'
+        | 'error'
+        | 'info';
+    } | null>(null);
 
   const fileInputRef =
     useRef<HTMLInputElement>(null);
@@ -90,9 +105,15 @@ export default function App() {
 
   const showToast = (
     message: string,
-    type: 'success' | 'error' | 'info' = 'info'
+    type:
+      | 'success'
+      | 'error'
+      | 'info' = 'info'
   ) => {
-    setToast({ message, type });
+    setToast({
+      message,
+      type
+    });
 
     setTimeout(() => {
       setToast(null);
@@ -115,37 +136,68 @@ export default function App() {
   };
 
   // =========================================================
-  // LIMPIAR NUMERO
+  // LIMPIAR NUMEROS
   // =========================================================
-     const cleanNumber = (val: string): number => {
+
+  const cleanNumber = (
+    val: string
+  ): number => {
     if (!val) return 0;
 
-    const cleaned = val
+    let cleaned = val
       .replace(/[^\d.,-]/g, '')
-      .replace(/,/g, '');
+      .trim();
 
-    const num = parseFloat(cleaned);
+    if (!cleaned) return 0;
+
+    const lastComma =
+      cleaned.lastIndexOf(',');
+
+    const lastDot =
+      cleaned.lastIndexOf('.');
+
+    // FORMATO EUROPEO
+    // 1.234,56
+    if (lastComma > lastDot) {
+      cleaned = cleaned
+        .replace(/\./g, '')
+        .replace(',', '.');
+    }
+
+    // FORMATO USA
+    // 1,234.56
+    else {
+      cleaned =
+        cleaned.replace(/,/g, '');
+    }
+
+    const num =
+      parseFloat(cleaned);
 
     return isNaN(num) ? 0 : num;
   };
 
-  
-
-  
   // =========================================================
-  // OCR LOCAL
+  // OCR
   // =========================================================
 
   const runOCR = async (
     canvas: HTMLCanvasElement
   ) => {
-    const result = await Tesseract.recognize(
-      canvas,
-      'spa',
-      {
-        langPath: 'https://tessdata.projectnaptha.com/4.0.0'
-      }
-    );
+    const result =
+      await Tesseract.recognize(
+        canvas,
+        'spa',
+        {
+          logger: m => {
+            console.log(m);
+          },
+
+          // FIX ERROR 404
+          langPath:
+            'https://tessdata.projectnaptha.com/4.0.0'
+        }
+      );
 
     return result.data.text;
   };
@@ -169,8 +221,12 @@ export default function App() {
       const arrayBuffer =
         await pdfFile.arrayBuffer();
 
-      if (arrayBuffer.byteLength === 0) {
-        throw new Error('PDF vacío');
+      if (
+        arrayBuffer.byteLength === 0
+      ) {
+        throw new Error(
+          'PDF vacío'
+        );
       }
 
       const loadingTask =
@@ -224,7 +280,9 @@ export default function App() {
             text.split(/\s{2,}/);
 
           if (split.length >= 2) {
-            extractedRows.push(split);
+            extractedRows.push(
+              split
+            );
           } else {
             extractedRows.push([
               text,
@@ -238,7 +296,9 @@ export default function App() {
       // OCR SI NO HAY TEXTO
       // =====================================================
 
-      if (extractedRows.length < 10) {
+      if (
+        extractedRows.length < 10
+      ) {
         updateProgress(
           50,
           'PDF escaneado detectado. Ejecutando OCR...'
@@ -251,7 +311,8 @@ export default function App() {
         ) {
           updateProgress(
             50 +
-              (i / totalPages) * 40,
+              (i / totalPages) *
+                40,
             `OCR página ${i} de ${totalPages}`
           );
 
@@ -284,6 +345,15 @@ export default function App() {
               context as any,
             viewport
           } as any).promise;
+
+          // EVITA FREEZE UI
+          await new Promise(
+            resolve =>
+              setTimeout(
+                resolve,
+                50
+              )
+          );
 
           const text =
             await runOCR(canvas);
@@ -322,7 +392,7 @@ export default function App() {
       }
 
       // =====================================================
-      // VALIDAR DATOS
+      // VALIDAR
       // =====================================================
 
       if (
@@ -334,7 +404,7 @@ export default function App() {
       }
 
       // =====================================================
-      // CREAR INVENTARIO
+      // PROCESAR INVENTARIO
       // =====================================================
 
       const processedInventory: InventoryRow[] =
@@ -464,6 +534,10 @@ export default function App() {
       const wb =
         XLSX.utils.book_new();
 
+      // ============================================
+      // HOJA AJUSTE
+      // ============================================
+
       const ajusteData =
         inventoryData.map(item => {
           const diff =
@@ -477,7 +551,8 @@ export default function App() {
             Descripcion:
               item.descripcion,
 
-            Unidad: item.unidad,
+            Unidad:
+              item.unidad,
 
             Cantidad_Fisica:
               item.cantidadFisica,
@@ -507,6 +582,10 @@ export default function App() {
         ws1,
         'Ajuste_Contable'
       );
+
+      // ============================================
+      // HOJA DETALLE
+      // ============================================
 
       const detalleData =
         inventoryData.map(
@@ -545,28 +624,41 @@ export default function App() {
         'Detalle_Inventario'
       );
 
+      // ============================================
+      // FORMULARIO
+      // ============================================
+
       const formRows = [
-        ['CONCEPTO', 'VALOR'],
+        [
+          'CONCEPTO',
+          'VALOR'
+        ],
+
         [
           'Fecha de conteo',
           formulario.fecha
         ],
+
         [
           'Realizado por',
           formulario.realizadoPor
         ],
+
         [
           'Areas inventariadas',
           formulario.areas
         ],
+
         [
           'Motivo del inventario',
           formulario.motivo
         ],
+
         [
           'Problemas detectados',
           formulario.problemas
         ],
+
         [
           'Plan de accion',
           formulario.planAccion
@@ -584,11 +676,17 @@ export default function App() {
         'Formulario_Ajuste'
       );
 
+      // ============================================
+      // EXPORTAR
+      // ============================================
+
       XLSX.writeFile(
         wb,
-        `Inventario_Contable_${new Date()
-          .toISOString()
-          .split('T')[0]}.xlsx`
+        `Inventario_Contable_${
+          new Date()
+            .toISOString()
+            .split('T')[0]
+        }.xlsx`
       );
 
       showToast(
@@ -627,6 +725,8 @@ export default function App() {
     <div className="min-h-screen bg-[#f8fafc] font-sans text-[#0f172a]">
       <div className="max-w-6xl mx-auto py-12 px-6">
 
+        {/* HEADER */}
+
         <motion.div
           initial={{
             opacity: 0,
@@ -640,6 +740,7 @@ export default function App() {
         >
           <div>
             <div className="flex items-center gap-3 mb-2">
+
               <div className="p-2 bg-indigo-600 rounded-lg text-white">
                 <Calculator className="w-6 h-6" />
               </div>
@@ -655,7 +756,11 @@ export default function App() {
           </div>
         </motion.div>
 
+        {/* CARD */}
+
         <div className="bg-white rounded-3xl shadow-xl border border-slate-200 p-8">
+
+          {/* UPLOAD */}
 
           {!file &&
             !state.isProcessing && (
@@ -663,14 +768,17 @@ export default function App() {
                 onClick={() =>
                   fileInputRef.current?.click()
                 }
+
                 onDragOver={e =>
                   e.preventDefault()
                 }
+
                 onDrop={e => {
                   e.preventDefault();
 
                   const droppedFile =
-                    e.dataTransfer.files[0];
+                    e.dataTransfer
+                      .files[0];
 
                   if (droppedFile) {
                     handleFile(
@@ -678,6 +786,7 @@ export default function App() {
                     );
                   }
                 }}
+
                 className="border-2 border-dashed border-slate-300 rounded-3xl p-20 text-center cursor-pointer hover:border-indigo-500 transition"
               >
                 <input
@@ -685,6 +794,7 @@ export default function App() {
                   ref={fileInputRef}
                   className="hidden"
                   accept=".pdf"
+
                   onChange={e => {
                     if (
                       e.target.files?.[0]
@@ -698,6 +808,7 @@ export default function App() {
                 />
 
                 <div className="flex flex-col items-center">
+
                   <div className="w-24 h-24 bg-indigo-600 rounded-2xl flex items-center justify-center text-white mb-6">
                     <FileText className="w-12 h-12" />
                   </div>
@@ -712,6 +823,8 @@ export default function App() {
                 </div>
               </div>
             )}
+
+          {/* PROCESANDO */}
 
           {state.isProcessing && (
             <div className="py-20 flex flex-col items-center justify-center text-center space-y-6">
@@ -733,6 +846,8 @@ export default function App() {
             </div>
           )}
 
+          {/* RESULTADOS */}
+
           {inventoryData.length > 0 &&
             !state.isProcessing && (
               <div className="space-y-8">
@@ -740,6 +855,7 @@ export default function App() {
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
 
                   <div className="bg-slate-900 text-white p-6 rounded-2xl">
+
                     <div className="text-xs uppercase mb-2">
                       Artículos
                     </div>
@@ -752,46 +868,13 @@ export default function App() {
                   </div>
 
                   <div className="bg-indigo-600 text-white p-6 rounded-2xl">
+
                     <div className="text-xs uppercase mb-2">
                       Ajuste Neto
                     </div>
 
                     <div className="text-2xl font-black">
                       {totalAjuste.toLocaleString()}
-                    </div>
-                  </div>
-
-                  <div className="bg-emerald-500 text-white p-6 rounded-2xl">
-                    <div className="text-xs uppercase mb-2">
-                      Sobrantes
-                    </div>
-
-                    <div className="text-3xl font-black">
-                      {
-                        inventoryData.filter(
-                          i =>
-                            i.cantidadFisica -
-                              i.cantidadTeorica >
-                            0
-                        ).length
-                      }
-                    </div>
-                  </div>
-
-                  <div className="bg-rose-500 text-white p-6 rounded-2xl">
-                    <div className="text-xs uppercase mb-2">
-                      Faltantes
-                    </div>
-
-                    <div className="text-3xl font-black">
-                      {
-                        inventoryData.filter(
-                          i =>
-                            i.cantidadFisica -
-                              i.cantidadTeorica <
-                            0
-                        ).length
-                      }
                     </div>
                   </div>
                 </div>
@@ -801,6 +884,7 @@ export default function App() {
                   <div className="flex-1 bg-white border border-slate-200 rounded-3xl p-8">
 
                     <div className="flex items-center gap-3 mb-6">
+
                       <ClipboardList className="text-indigo-600 w-6 h-6" />
 
                       <h4 className="font-black">
@@ -812,16 +896,20 @@ export default function App() {
 
                       <input
                         type="text"
+
                         value={
                           formulario.realizadoPor
                         }
+
                         onChange={e =>
                           setFormulario({
                             ...formulario,
                             realizadoPor:
-                              e.target.value
+                              e.target
+                                .value
                           })
                         }
+
                         className="border rounded-xl px-4 py-3"
                       />
 
@@ -829,13 +917,16 @@ export default function App() {
                         value={
                           formulario.motivo
                         }
+
                         onChange={e =>
                           setFormulario({
                             ...formulario,
                             motivo:
-                              e.target.value
+                              e.target
+                                .value
                           })
                         }
+
                         className="border rounded-xl px-4 py-3"
                       >
                         <option>
@@ -855,6 +946,7 @@ export default function App() {
                       onClick={
                         downloadExcel
                       }
+
                       className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl p-6 font-black transition"
                     >
                       Generar Excel
@@ -868,6 +960,7 @@ export default function App() {
                           []
                         );
                       }}
+
                       className="border rounded-2xl p-4"
                     >
                       Nuevo Proceso
@@ -879,6 +972,8 @@ export default function App() {
         </div>
       </div>
 
+      {/* TOAST */}
+
       <AnimatePresence>
         {toast && (
           <motion.div
@@ -887,16 +982,19 @@ export default function App() {
               y: 30,
               x: '-50%'
             }}
+
             animate={{
               opacity: 1,
               y: 0,
               x: '-50%'
             }}
+
             exit={{
               opacity: 0,
               y: 20,
               x: '-50%'
             }}
+
             className="fixed bottom-10 left-1/2 z-50"
           >
             <div
