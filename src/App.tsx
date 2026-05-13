@@ -12,14 +12,15 @@ export default function App() {
       message: 'Analizando estructura contable...'
     });
 
-  setInventoryData([]);
+    setInventoryData([]);
 
-  let worker: any = null;
+    let worker: any = null;
 
-  try {
-    const arrayBuffer = await pdfFile.arrayBuffer();
+    try {
 
-    if (arrayBuffer.byteLength === 0) {
+      const arrayBuffer = await pdfFile.arrayBuffer();
+
+      // TODO TU CÓ if (arrayBuffer.byteLength === 0) {
       throw new Error('El archivo PDF está vacío.');
     }
 
@@ -349,20 +350,25 @@ export default function App() {
 
     if (worker) {
       try {
-        await worker.terminate();
-      } catch (e) {
-        console.warn(
-          'Worker terminate error',
-          e
-        );
-      }
-    }
+        await workeDIGO AQUÍ
 
-    setState(prev => ({
-      ...prev,
-      isProcessing: false,
-      progress: 100
-    }));
-  }
-};
+    } catch (err) {
+
+      console.error(err);
+
+    } finally {
+
+      setState(prev => ({
+        ...prev,
+        isProcessing: false
+      }));
+    }
+  };
+
+  return (
+    <div>
+      App funcionando
+    </div>
+  );
+}};
 export default App;
