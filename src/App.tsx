@@ -103,22 +103,48 @@ export default function App() {
   // ========================================================
   // OCR MEJORADO - EJECUTA SIEMPRE
   // ========================================================
-  const runOCR = async (canvas: HTMLCanvasElement): Promise<string> => {
-    try {
-      const result = await Tesseract.recognize(canvas, 'spa', {
-        langPath: '/Conversor-PDF_Excel/tessdata',
+
+
+  
+
+  const runOCR = async (
+  canvas: HTMLCanvasElement
+): Promise<string> => {
+  try {
+    const result = await Tesseract.recognize(
+      canvas,
+      'spa',
+      {
+        // RUTA CORRECTA
+        langPath: `${import.meta.env.BASE_URL}tessdata`,
+
         logger: (m) => {
-          if (m.status === 'recognizing text') {
-            console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
+          if (
+            m.status ===
+            'recognizing text'
+          ) {
+            console.log(
+              `OCR Progress: ${Math.round(
+                m.progress * 100
+              )}%`
+            );
           }
         },
-      });
-      return result.data.text;
-    } catch (error) {
-      console.error('Error en OCR:', error);
-      return '';
-    }
-  };
+      }
+    );
+
+    return result.data.text;
+  } catch (error) {
+    console.error(
+      'Error en OCR:',
+      error
+    );
+
+    return '';
+  }
+};
+
+  
 
   // ========================================================
   // EXTRAER TEXTO NATIVO DE PDF
