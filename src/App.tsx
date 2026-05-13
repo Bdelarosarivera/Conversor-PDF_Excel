@@ -104,14 +104,10 @@ export default function App() {
   // OCR MEJORADO - EJECUTA SIEMPRE
   // ======================================================== // ========================================================
 
-
-
-
-
 const runOCR = async (
   canvas: HTMLCanvasElement
 ): Promise<string> => {
-  let worker: any = null;
+  let worker: any;
 
   try {
     worker = await createWorker('spa', 1, {
@@ -152,11 +148,6 @@ const runOCR = async (
 };
 
 
-
-
-  
-
-  
 
   // ======================================================== // ========================================================
   // EXTRAER TEXTO NATIVO DE PDF
