@@ -1,27 +1,28 @@
-import { useState, useRef } from 'react';
-
-import {
-  FileText,
-  CheckCircle,
-  AlertCircle,
+import { useState, useRef, useCallback, DragEvent } from 'react';
+import { 
+  FileText, 
+  Download, 
+  RefreshCw, 
+  CheckCircle, 
+  AlertCircle, 
+  X,
+  Loader2,
+  Table as TableIcon,
   Calculator,
+  ClipboardList,
+  FileSpreadsheet,
   TrendingDown,
   TrendingUp,
-  Loader2
+  DollarSign
 } from 'lucide-react';
-
 import { motion, AnimatePresence } from 'motion/react';
-
 import * as pdfjs from 'pdfjs-dist';
-
 import * as XLSX from 'xlsx';
-
-import Tesseract from 'tesseract.js';
-
+import { createWorker } from 'tesseract.js';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
+// Initialize PDF.js with bundled worker
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
-
 
 interface InventoryRow {
   articulo: string;
@@ -30,6 +31,7 @@ interface InventoryRow {
   cantidadFisica: number;
   cantidadTeorica: number;
   costoUnitario: number;
+  // Extended fields
   familia: string;
   clasificacion: string;
   marca: string;
@@ -53,11 +55,8 @@ interface ProcessState {
 }
 
 export default function App() {
-
   const [file, setFile] = useState<File | null>(null);
-
   const [inventoryData, setInventoryData] = useState<InventoryRow[]>([]);
-
   const [formulario, setFormulario] = useState<FormularioAjuste>({
     fecha: new Date().toLocaleDateString(),
     realizadoPor: 'Generado por Sistema',
@@ -66,765 +65,500 @@ export default function App() {
     problemas: 'N/A',
     planAccion: 'Sincronización de stock'
   });
-
+  
   const [state, setState] = useState<ProcessState>({
     progress: 0,
     message: '',
     isProcessing: false
   });
-
-  const [toast, setToast] = useState<{
-    message: string;
-    type: 'success' | 'error' | 'info';
-  } | null>(null);
-
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dropZoneRef = useRef<HTMLDivElement>(null);
 
-  // =========================================
-  // TOAST
-  // =========================================
-
-  const showToast = (
-    message: string,
-    type: 'success' | 'error' | 'info' = 'info'
-  ) => {
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ message, type });
-
-    setTimeout(() => {
-      setToast(null);
-    }, 4000);
+    setTimeout(() => setToast(null), 4000);
   };
 
-  // =========================================
-  // UPDATE PROGRESS
-  // =========================================
-
-  const updateProgress = (
-    progress: number,
-    message: string
-  ) => {
-    setState(prev => ({
-      ...prev,
-      progress,
-      message
-    }));
+  const updateProgress = (progress: number, message: string) => {
+    setState(prev => ({ ...prev, progress, message }));
   };
-
-  // =========================================
-  // OCR NORMALIZATION
-  // =========================================
-
-  const normalizeOCR = (text: string) => {
-    return text
-      .replace(/[|]/g, '1')
-      .replace(/[O]/g, '0')
-      .replace(/[l]/g, '1')
-      .replace(/[S]/g, '5')
-      .replace(/[B]/g, '8');
-  };
-
-  // =========================================
-  // CLEAN NUMBER
-  // =========================================
 
   const cleanNumber = (val: string): number => {
-
     if (!val) return 0;
-
-    const cleaned = val
-      .replace(/[RD$€£,\s]/g, '')
-      .replace(/[^\d.-]/g, '');
-
+    // Remove currency symbols, commas, and spaces
+    const cleaned = val.replace(/[RD$€£\s,]/g, '');
     const num = parseFloat(cleaned);
-
     return isNaN(num) ? 0 : num;
   };
 
-  // =========================================
-  // OCR PDF PAGE
-  // =========================================
-
-  const extractTextWithOCR = async (page: any) => {
-
-    const viewport = page.getViewport({ scale: 2 });
-
-    const canvas = document.createElement('canvas');
-
-    const context = canvas.getContext('2d');
-
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-
-    await page.render({
-      canvasContext: context!,
-      viewport
-    }).promise;
-
-    const result = await Tesseract.recognize(
-      canvas,
-      'spa',
-      {
-        logger: m => {
-          console.log(m);
-        }
-      }
-    );
-
-    return normalizeOCR(result.data.text);
-  };
-
-  // =========================================
-  // PARSE ROWS
-  // =========================================
-
-  const parseRows = (text: string) => {
-
-    const rows: string[][] = [];
-
-    const lines = text
-      .split('\n')
-      .map(l => l.trim())
-      .filter(Boolean);
-
-    lines.forEach(line => {
-
-      // Split by multiple spaces
-      const cols = line
-        .split(/\s{2,}/)
-        .map(c => c.trim())
-        .filter(Boolean);
-
-      if (cols.length >= 2) {
-        rows.push(cols);
-      }
-    });
-
-    return rows;
-  };
-
-  // =========================================
-  // PROCESS PDF
-  // =========================================
-
   const processPDF = async (pdfFile: File) => {
-
-    setState({
-      isProcessing: true,
-      progress: 0,
-      message: 'Analizando PDF...'
-    });
-
+    setState({ isProcessing: true, progress: 0, message: 'Analizando estructura contable...' });
     setInventoryData([]);
 
     try {
-
       const arrayBuffer = await pdfFile.arrayBuffer();
+      if (arrayBuffer.byteLength === 0) throw new Error("El archivo PDF está vacío.");
 
-      if (arrayBuffer.byteLength === 0) {
-        throw new Error('El archivo está vacío.');
-      }
-
-      const loadingTask = pdfjs.getDocument({
-        data: arrayBuffer
+      const loadingTask = pdfjs.getDocument({ 
+        data: arrayBuffer,
+        cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/cmaps/`,
+        cMapPacked: true,
       });
 
       const pdf = await loadingTask.promise;
-
       const totalPages = pdf.numPages;
+      let allExtractedRows: string[][] = [];
+      
+      const ROW_TOLERANCE = 3;
 
-      const allExtractedRows: string[][] = [];
-
+      // Primary Extraction: Standard Text
       for (let i = 1; i <= totalPages; i++) {
-
-        updateProgress(
-          (i / totalPages) * 100,
-          `Procesando página ${i} de ${totalPages}`
-        );
-
+        updateProgress((i / totalPages) * 50, `Auditando página ${i} de ${totalPages}...`);
         const page = await pdf.getPage(i);
-
         const textContent = await page.getTextContent();
-
-        console.log(
-          'TEXT ITEMS:',
-          textContent.items.length
-        );
-
-        // =====================================
-        // PDF DIGITAL
-        // =====================================
-
-        if (textContent.items.length > 0) {
-
-          const rows: { y: number; items: any[] }[] = [];
-
-          textContent.items.forEach((item: any) => {
-
-            if ('transform' in item) {
-
-              const y = item.transform[5];
-
-              let foundRow = rows.find(
-                r => Math.abs(r.y - y) <= 3
-              );
-
-              if (!foundRow) {
-
-                foundRow = {
-                  y,
-                  items: []
-                };
-
-                rows.push(foundRow);
-              }
-
-              foundRow.items.push(item);
+        
+        const rows: { y: number; items: any[] }[] = [];
+        textContent.items.forEach((item: any) => {
+          if ('transform' in item) {
+            const y = item.transform[5];
+            let foundRow = rows.find(r => Math.abs(r.y - y) <= ROW_TOLERANCE);
+            if (!foundRow) {
+              foundRow = { y: y, items: [] };
+              rows.push(foundRow);
             }
-          });
+            foundRow.items.push(item);
+          }
+        });
 
-          rows.sort((a, b) => b.y - a.y);
+        rows.sort((a, b) => b.y - a.y);
+        rows.forEach(row => {
+          const items = row.items.sort((a, b) => a.transform[4] - b.transform[4]);
+          const rowData: string[] = [];
+          if (items.length === 0) return;
 
-          rows.forEach(row => {
+          let currentStr = items[0].str;
+          let lastX = items[0].transform[4] + (items[0].width || 0);
 
-            const items = row.items.sort(
-              (a, b) => a.transform[4] - b.transform[4]
-            );
-
-            const rowData: string[] = [];
-
-            if (items.length === 0) return;
-
-            let currentStr = items[0].str;
-
-            let lastX =
-              items[0].transform[4] +
-              (items[0].width || 0);
-
-            for (let j = 1; j < items.length; j++) {
-
-              const it = items[j];
-
-              const gap =
-                it.transform[4] - lastX;
-
-              const minGap =
-                it.height
-                  ? it.height * 0.4
-                  : 8;
-
-              if (gap > minGap) {
-
-                rowData.push(currentStr.trim());
-
-                currentStr = it.str;
-
-              } else {
-
-                currentStr +=
-                  (currentStr.endsWith(' ') ||
-                  it.str.startsWith(' ')
-                    ? ''
-                    : ' ') + it.str;
-              }
-
-              lastX =
-                it.transform[4] +
-                (it.width || 0);
+          for (let j = 1; j < items.length; j++) {
+            const it = items[j];
+            const gap = it.transform[4] - lastX;
+            const minGap = it.height ? it.height * 0.4 : 8;
+            
+            if (gap > minGap) { 
+              rowData.push(currentStr.trim());
+              currentStr = it.str;
+            } else {
+              currentStr += (currentStr.endsWith(' ') || it.str.startsWith(' ') ? '' : ' ') + it.str;
             }
-
-            rowData.push(currentStr.trim());
-
-            if (
-              rowData.some(
-                cell => cell.length > 0
-              )
-            ) {
-              allExtractedRows.push(rowData);
-            }
-          });
-
-        } else {
-
-          // =====================================
-          // OCR FALLBACK
-          // =====================================
-
-          showToast(
-            'PDF escaneado detectado. Ejecutando OCR...',
-            'info'
-          );
-
-          const ocrText =
-            await extractTextWithOCR(page);
-
-          console.log('OCR TEXT:', ocrText);
-
-          const parsedRows =
-            parseRows(ocrText);
-
-          parsedRows.forEach(r => {
-            allExtractedRows.push(r);
-          });
-        }
+            lastX = it.transform[4] + (it.width || 0);
+          }
+          rowData.push(currentStr.trim());
+          if (rowData.some(cell => cell.length > 0)) allExtractedRows.push(rowData);
+        });
       }
 
-      // =====================================
-      // MAP INVENTORY
-      // =====================================
+      // Secondary Extraction: OCR Fallback for Scanned PDF
+      if (allExtractedRows.length < 5) {
+        updateProgress(50, "Buscando texto en imagen (OCR activo)...");
+        const worker = await createWorker('spa'); // Spanish
+        
+        for (let i = 1; i <= totalPages; i++) {
+          updateProgress(50 + (i / totalPages) * 50, `Procesando imagen pág ${i}...`);
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale: 2.0 }); // High scale for accuracy
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
 
-      const processedInventory: InventoryRow[] =
-        allExtractedRows
+          if (context) {
+            await page.render({ 
+              canvasContext: context as any, 
+              viewport: viewport 
+            } as any).promise;
+            const { data: { text } } = await worker.recognize(canvas);
+            
+            // Convert OCR text block to rows
+            const lines = text.split('\n');
+            lines.forEach(line => {
+              const rowData = line.trim().split(/\s{2,}/); // Split by 2+ spaces (common in OCR tables)
+              if (rowData.length >= 2) allExtractedRows.push(rowData);
+            });
+          }
+        }
+        await worker.terminate();
+      }
 
-          .filter(row => row.length >= 2)
-
+      // Business Logic: Identify Header and Map Columns
+      if (allExtractedRows.length > 0) {
+        const processedInventory: InventoryRow[] = allExtractedRows
+          .filter(row => row.length >= 2) 
           .map(row => {
-
-            const numericCells = row
-
-              .map(c => ({
-                original: c,
-                val: cleanNumber(c)
-              }))
-
-              .filter(c =>
-                c.val !== 0 ||
-                /^[0]$/.test(c.original.trim())
-              );
+            const numericCells = row.map(c => ({ original: c, val: cleanNumber(c) }))
+                                   .filter(c => c.val !== 0 || /^[0]$/.test(c.original.trim()));
 
             return {
-
-              articulo:
-                row[0] || 'N/A',
-
-              descripcion:
-                row[1] || 'Sin descripción',
-
-              unidad:
-                row.find(c =>
-                  /^(UND|PCS|CAJA|KG|LBS|GR|UD)$/i
-                    .test(c.trim())
-                ) || 'UND',
-
-              cantidadFisica:
-                numericCells[0]?.val || 0,
-
-              cantidadTeorica:
-                numericCells[1]?.val ||
-                numericCells[0]?.val ||
-                0,
-
-              costoUnitario:
-                numericCells[
-                  numericCells.length - 1
-                ]?.val || 0,
-
+              articulo: row[0] || 'N/A',
+              descripcion: row[1] || 'Sin descripción',
+              unidad: row.find(c => /^(UND|PCS|CAJA|KG|LBS|GR|UD|UNID|PAQUETE)$/i.test(c.trim())) || 'UND',
+              cantidadFisica: numericCells[0]?.val || 0,
+              cantidadTeorica: numericCells[1]?.val || numericCells[0]?.val || 0,
+              costoUnitario: numericCells[numericCells.length - 1]?.val || 0,
               familia: 'General',
-
               clasificacion: 'A',
-
               marca: 'Varios',
-
-              referencia:
-                row[0] || '',
-
-              ubicacion:
-                'Almacén Central'
+              referencia: row[0] || '',
+              ubicacion: 'Almacén Central'
             };
           })
-
-          .filter(item =>
-            item.articulo &&
-            item.articulo !== 'Articulo' &&
-            item.articulo !== 'Código'
+          .filter(item => 
+            !/^(Articulo|Item|Codigo|Cant|Costo|Total|Descripcion|Fecha|Pagina|Total)/i.test(item.articulo) &&
+            item.articulo.length > 1
           );
 
-      if (processedInventory.length === 0) {
-        throw new Error(
-          'No se encontraron datos válidos.'
-        );
+        if (processedInventory.length > 0) {
+          setInventoryData(processedInventory);
+          showToast("¡Auditoría completada satisfactoriamente!", "success");
+        } else {
+          throw new Error("No se pudo identificar una tabla de inventario en el documento.");
+        }
+      } else {
+        throw new Error("El documento parece estar vacío o es ilegible.");
       }
-
-      setInventoryData(processedInventory);
-
-      showToast(
-        'PDF procesado correctamente.',
-        'success'
-      );
-
     } catch (err: any) {
-
       console.error(err);
-
-      showToast(
-        err.message ||
-        'Error al procesar PDF.',
-        'error'
-      );
-
+      let msg = err.message || "Error al procesar el inventario.";
+      if (err.name === 'InvalidPDFException') msg = "El archivo PDF está corrupto o no es válido.";
+      showToast(msg, "error");
     } finally {
-
-      setState(prev => ({
-        ...prev,
-        isProcessing: false
-      }));
+      setState(prev => ({ ...prev, isProcessing: false }));
     }
   };
 
-  // =========================================
-  // HANDLE FILE
-  // =========================================
-
   const handleFile = (file: File) => {
-
-    if (
-      file.type !== 'application/pdf'
-    ) {
-
-      showToast(
-        'Selecciona un PDF válido.',
-        'error'
-      );
-
+    if (file.type !== 'application/pdf') {
+      showToast("Por favor, selecciona un reporte de inventario en PDF.", "error");
       return;
     }
-
     setFile(file);
-
     processPDF(file);
   };
 
-  // =========================================
-  // DOWNLOAD EXCEL
-  // =========================================
-
   const downloadExcel = () => {
+    if (inventoryData.length === 0 || !file) return;
+    try {
+      const wb = XLSX.utils.book_new();
 
-    if (
-      inventoryData.length === 0
-    ) return;
-
-    const wb = XLSX.utils.book_new();
-
-    const excelData =
-      inventoryData.map(item => {
-
-        const diff =
-          item.cantidadFisica -
-          item.cantidadTeorica;
-
+      // Sheet 1: Ajuste_Contable
+      const ajusteData = inventoryData.map(item => {
+        const diff = item.cantidadFisica - item.cantidadTeorica;
         return {
-
-          Articulo:
-            item.articulo,
-
-          Descripcion:
-            item.descripcion,
-
-          Unidad:
-            item.unidad,
-
-          Cantidad_Fisica:
-            item.cantidadFisica,
-
-          Cantidad_Teorica:
-            item.cantidadTeorica,
-
-          Diferencia:
-            diff,
-
-          Costo_Unitario:
-            item.costoUnitario,
-
-          Ajuste_RD:
-            diff *
-            item.costoUnitario
+          'Articulo': item.articulo,
+          'Descripcion': item.descripcion,
+          'Unidad': item.unidad,
+          'Cantidad_Fisica': item.cantidadFisica,
+          'Cantidad_Teorica': item.cantidadTeorica,
+          'Diferencia_Unidades': diff,
+          'Costo_Unitario': item.costoUnitario,
+          'Ajuste_RD$': diff * item.costoUnitario
         };
       });
+      const ws1 = XLSX.utils.json_to_sheet(ajusteData);
+      XLSX.utils.book_append_sheet(wb, ws1, "Ajuste_Contable");
 
-    const ws =
-      XLSX.utils.json_to_sheet(
-        excelData
-      );
+      // Sheet 2: Detalle_Inventario
+      const detalleData = inventoryData.map(item => ({
+        'Articulo': item.articulo,
+        'Familia': item.familia,
+        'Clasificacion': item.clasificacion,
+        'Marca': item.marca,
+        'Referencia': item.referencia,
+        'Ubicacion': item.ubicacion,
+        'Cantidad_por_Ubicacion': item.cantidadFisica,
+        'Total_Articulo': item.cantidadFisica,
+        'Diferencia': item.cantidadFisica - item.cantidadTeorica
+      }));
+      const ws2 = XLSX.utils.json_to_sheet(detalleData);
+      XLSX.utils.book_append_sheet(wb, ws2, "Detalle_Inventario");
 
-    XLSX.utils.book_append_sheet(
-      wb,
-      ws,
-      'Inventario'
-    );
+      // Sheet 3: Formulario_Ajuste
+      const formRows = [
+        ['CONCEPTO', 'VALOR'],
+        ['Fecha de conteo', formulario.fecha],
+        ['Realizado por', formulario.realizadoPor],
+        ['Areas inventariadas', formulario.areas],
+        ['Motivo del inventario', formulario.motivo],
+        ['Problemas detectados', formulario.problemas],
+        ['Plan de accion', formulario.planAccion],
+        [],
+        ['RESUMEN DE AUDITORIA', ''],
+        ['Items Procesados', inventoryData.length],
+        ['Total Ajuste Positivo (Sobrantes)', inventoryData.filter(i => (i.cantidadFisica - i.cantidadTeorica) > 0).length],
+        ['Total Ajuste Negativo (Faltantes)', inventoryData.filter(i => (i.cantidadFisica - i.cantidadTeorica) < 0).length],
+      ];
+      const ws3 = XLSX.utils.aoa_to_sheet(formRows);
+      XLSX.utils.book_append_sheet(wb, ws3, "Formulario_Ajuste");
 
-    XLSX.writeFile(
-      wb,
-      `Inventario_${Date.now()}.xlsx`
-    );
-
-    showToast(
-      'Excel generado.',
-      'success'
-    );
+      const fileName = `Inventario_Contable_${new Date().toISOString().split('T')[0]}.xlsx`;
+      XLSX.writeFile(wb, fileName);
+      showToast("Reporte contable generado.", "success");
+    } catch (e) {
+      showToast("Error al exportar reporte.", "error");
+    }
   };
 
-  // =========================================
-  // TOTAL AJUSTE
-  // =========================================
-
-  const totalAjuste =
-    inventoryData.reduce(
-      (acc, curr) =>
-        acc +
-        (
-          (
-            curr.cantidadFisica -
-            curr.cantidadTeorica
-          ) *
-          curr.costoUnitario
-        ),
-      0
-    );
+  const totalAjuste = inventoryData.reduce((acc, curr) => acc + (curr.cantidadFisica - curr.cantidadTeorica) * curr.costoUnitario, 0);
 
   return (
-
-    <div className="min-h-screen bg-slate-100 p-10">
-
-      <div className="max-w-6xl mx-auto">
-
-        <div className="bg-white rounded-3xl p-10 shadow-xl">
-
-          <div className="flex items-center gap-4 mb-10">
-
-            <div className="bg-indigo-600 p-4 rounded-2xl text-white">
-              <Calculator />
-            </div>
-
-            <div>
-              <h1 className="text-4xl font-black">
-                Auditor Contable OCR
+    <div className="min-h-screen bg-[#f8fafc] font-sans text-[#0f172a] selection:bg-indigo-100">
+      <div className="max-w-6xl mx-auto py-12 px-6">
+        {/* Header Section */}
+        <motion.div 
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex flex-col md:flex-row items-center justify-between mb-12 gap-6"
+        >
+          <div className="text-center md:text-left">
+            <div className="flex items-center gap-3 mb-2 justify-center md:justify-start">
+              <div className="p-2 bg-indigo-600 rounded-lg text-white">
+                <Calculator className="w-6 h-6" />
+              </div>
+              <h1 className="text-3xl font-black tracking-tight text-slate-900 uppercase">
+                Auditor <span className="text-indigo-600 underline decoration-indigo-200 decoration-4 underline-offset-4">Contable</span>
               </h1>
-
-              <p className="text-slate-500 font-bold">
-                PDF → OCR → Excel
-              </p>
+            </div>
+            <p className="text-slate-500 font-semibold text-sm tracking-wide">
+              Sistema de Procesamiento y Ajuste de Inventarios RD$
+            </p>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="bg-white border border-slate-200 px-4 py-3 rounded-xl shadow-sm text-center">
+              <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Estado de Auditoría</div>
+              <div className="flex items-center gap-2 text-emerald-600 font-bold text-sm">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                Motor IA Activo
+              </div>
             </div>
           </div>
+        </motion.div>
 
-          {/* Upload */}
-
-          {!state.isProcessing &&
-            inventoryData.length === 0 && (
-
-            <div
-              onClick={() =>
-                fileInputRef.current?.click()
-              }
-              className="border-2 border-dashed border-slate-300 rounded-3xl p-20 text-center cursor-pointer hover:border-indigo-500 transition-all"
-            >
-
-              <input
-                type="file"
-                ref={fileInputRef}
-                accept=".pdf"
-                className="hidden"
-                onChange={e => {
-
-                  if (
-                    e.target.files?.[0]
-                  ) {
-
-                    handleFile(
-                      e.target.files[0]
-                    );
-                  }
+        {/* Main Content Card */}
+        <div className="bg-white rounded-[2.5rem] shadow-2xl shadow-slate-200/60 border border-slate-200/50 p-1 md:p-2 overflow-hidden">
+          <div className="p-6 md:p-10">
+            {!file && !state.isProcessing && (
+              <motion.div
+                layoutId="upload-zone"
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const droppedFile = e.dataTransfer.files[0];
+                  if (droppedFile) handleFile(droppedFile);
                 }}
-              />
-
-              <FileText className="w-20 h-20 mx-auto mb-6 text-slate-400" />
-
-              <h2 className="text-3xl font-black mb-3">
-                Subir PDF
-              </h2>
-
-              <p className="text-slate-500 font-bold">
-                Compatible con PDFs digitales y escaneados
-              </p>
-            </div>
-          )}
-
-          {/* Processing */}
-
-          {state.isProcessing && (
-
-            <div className="py-20 text-center">
-
-              <Loader2 className="w-20 h-20 animate-spin mx-auto text-indigo-600 mb-6" />
-
-              <h2 className="text-3xl font-black mb-3">
-                {state.message}
-              </h2>
-
-              <p className="text-slate-500 font-bold">
-                {Math.round(state.progress)}%
-              </p>
-            </div>
-          )}
-
-          {/* Results */}
-
-          {inventoryData.length > 0 &&
-            !state.isProcessing && (
-
-            <div>
-
-              <div className="grid grid-cols-4 gap-4 mb-8">
-
-                <div className="bg-slate-900 text-white rounded-2xl p-6">
-                  <div className="text-xs uppercase font-black mb-2">
-                    Artículos
+                className="group cursor-pointer"
+              >
+                <div className="border-2 border-dashed border-slate-200 rounded-[2rem] p-20 text-center transition-all group-hover:border-indigo-500 group-hover:bg-indigo-50/20 group-hover:shadow-inner">
+                  <input 
+                    type="file" 
+                    ref={fileInputRef}
+                    className="hidden" 
+                    accept=".pdf" 
+                    onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+                  />
+                  <div className="flex flex-col items-center">
+                    <div className="w-28 h-28 bg-slate-900 text-white rounded-[1.75rem] flex items-center justify-center mb-8 group-hover:scale-110 group-hover:rotate-3 transition-transform duration-500 shadow-xl">
+                      <FileText className="w-12 h-12" />
+                    </div>
+                    <h3 className="text-3xl font-black text-slate-900 mb-3">Cargar Inventario</h3>
+                    <p className="text-slate-400 font-bold max-w-sm mx-auto text-lg">
+                      Sube el reporte PDF para detección automática de artículos y costos
+                    </p>
+                    <div className="mt-8 flex items-center gap-4 text-xs font-black text-slate-500 uppercase tracking-[0.2em] bg-slate-100 px-6 py-3 rounded-full">
+                      <span>Procesamiento Seguro</span>
+                      <span className="w-1 h-1 bg-slate-400 rounded-full" />
+                      <span>Formato SAP/ERP</span>
+                    </div>
                   </div>
+                </div>
+              </motion.div>
+            )}
 
-                  <div className="text-4xl font-black">
-                    {inventoryData.length}
+            {state.isProcessing && (
+              <motion.div className="py-20 flex flex-col items-center justify-center text-center space-y-8">
+                <div className="relative">
+                  <div className="w-24 h-24 border-4 border-slate-100 rounded-full" />
+                  <div className="absolute inset-0 border-4 border-t-indigo-600 border-l-transparent border-r-transparent border-b-transparent rounded-full animate-spin" />
+                  <div className="absolute inset-0 flex items-center justify-center font-black text-indigo-600">
+                    {Math.round(state.progress)}%
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <h4 className="text-2xl font-black text-slate-900">{state.message}</h4>
+                  <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">Analizando cada fila contablemente</p>
+                </div>
+              </motion.div>
+            )}
+
+            {inventoryData.length > 0 && !state.isProcessing && (
+              <div className="space-y-10 animate-in fade-in duration-500">
+                {/* Stats Summary */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="bg-slate-900 p-6 rounded-[1.5rem] text-white">
+                    <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Total Articulos</div>
+                    <div className="text-3xl font-black">{inventoryData.length}</div>
+                  </div>
+                  <div className="bg-indigo-600 p-6 rounded-[1.5rem] text-white">
+                    <div className="text-[10px] font-black text-indigo-200 uppercase tracking-widest mb-3">Ajuste Neto</div>
+                    <div className="text-3xl font-black flex items-center gap-2">
+                      <DollarSign className="w-6 h-6" />
+                      {totalAjuste.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="bg-emerald-500 p-6 rounded-[1.5rem] text-white">
+                    <div className="text-[10px] font-black text-emerald-100 uppercase tracking-widest mb-3">Sobrantes</div>
+                    <div className="text-3xl font-black flex items-center gap-2">
+                       <TrendingUp className="w-6 h-6" />
+                       {inventoryData.filter(i => (i.cantidadFisica - i.cantidadTeorica) > 0).length}
+                    </div>
+                  </div>
+                  <div className="bg-rose-500 p-6 rounded-[1.5rem] text-white">
+                    <div className="text-[10px] font-black text-rose-100 uppercase tracking-widest mb-3">Faltantes</div>
+                    <div className="text-3xl font-black flex items-center gap-2">
+                       <TrendingDown className="w-6 h-6" />
+                       {inventoryData.filter(i => (i.cantidadFisica - i.cantidadTeorica) < 0).length}
+                    </div>
                   </div>
                 </div>
 
-                <div className="bg-indigo-600 text-white rounded-2xl p-6">
-                  <div className="text-xs uppercase font-black mb-2">
-                    Ajuste
+                {/* Final Control Panel */}
+                <div className="flex flex-col lg:flex-row gap-6">
+                  <div className="flex-1 bg-white border border-slate-200 rounded-[2rem] p-8 space-y-6 shadow-sm">
+                    <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
+                      <ClipboardList className="text-indigo-600 w-6 h-6" />
+                      <h4 className="font-black text-slate-900 uppercase tracking-wider">Detalles de Auditoría</h4>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase">Responsable</label>
+                        <input 
+                          type="text" 
+                          value={formulario.realizadoPor}
+                          onChange={(e) => setFormulario({...formulario, realizadoPor: e.target.value})}
+                          className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-400 uppercase">Motivo</label>
+                        <select 
+                          value={formulario.motivo}
+                          onChange={(e) => setFormulario({...formulario, motivo: e.target.value})}
+                          className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 font-bold text-slate-900 focus:outline-none"
+                        >
+                          <option>Cuadre de Inventario</option>
+                          <option>Auditoría Sorpresiva</option>
+                          <option>Ajuste de Almacén</option>
+                          <option>Cierre Trimestral</option>
+                        </select>
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="text-2xl font-black">
-                    {totalAjuste.toLocaleString()}
+                  <div className="w-full lg:w-80 flex flex-col gap-4">
+                    <button 
+                      onClick={downloadExcel}
+                      className="flex-1 bg-indigo-600 hover:bg-slate-900 text-white rounded-[1.5rem] p-8 flex flex-col items-center justify-center gap-3 transition-all group relative overflow-hidden shadow-xl shadow-indigo-600/20"
+                    >
+                      <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                      <FileSpreadsheet className="w-10 h-10" />
+                      <span className="font-black uppercase tracking-widest text-sm">Generar Reporte Excel</span>
+                    </button>
+                    <button 
+                      onClick={() => { setFile(null); setInventoryData([]); }}
+                      className="bg-white border border-slate-200 hover:bg-slate-50 text-slate-500 rounded-[1.25rem] py-4 flex items-center justify-center gap-2 font-bold transition-all text-sm"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      Nuevo Proceso
+                    </button>
                   </div>
                 </div>
 
-                <div className="bg-emerald-500 text-white rounded-2xl p-6">
-                  <TrendingUp />
-                </div>
-
-                <div className="bg-rose-500 text-white rounded-2xl p-6">
-                  <TrendingDown />
+                {/* Table Preview */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 px-2">
+                    <div className="w-1.5 h-6 bg-slate-900 rounded-full" />
+                    <h3 className="font-black text-slate-900 uppercase tracking-widest text-sm">Previsualización del Ajuste Contable</h3>
+                  </div>
+                  <div className="bg-white border border-slate-200 rounded-[2rem] overflow-hidden shadow-xl shadow-slate-100/50">
+                    <div className="overflow-x-auto max-h-[500px]">
+                      <table className="w-full text-left border-collapse">
+                        <thead className="sticky top-0 bg-slate-900 text-white">
+                          <tr>
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Articulo</th>
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest">Descripción</th>
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-center">Fisico</th>
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-center">Teorico</th>
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-center">Dif. Und.</th>
+                            <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-right">Ajuste RD$</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {inventoryData.map((item, idx) => {
+                            const diff = item.cantidadFisica - item.cantidadTeorica;
+                            const adjustment = diff * item.costoUnitario;
+                            return (
+                              <tr key={idx} className="hover:bg-indigo-50/30 transition-colors group">
+                                <td className="px-6 py-4 font-mono text-xs font-bold text-slate-500">{item.articulo}</td>
+                                <td className="px-6 py-4">
+                                  <div className="text-sm font-bold text-slate-900">{item.descripcion}</div>
+                                  <div className="text-[10px] font-black text-slate-300 uppercase">{item.familia}</div>
+                                </td>
+                                <td className="px-6 py-4 text-center font-black text-slate-900">{item.cantidadFisica}</td>
+                                <td className="px-6 py-4 text-center font-bold text-slate-400">{item.cantidadTeorica}</td>
+                                <td className="px-6 py-4 text-center">
+                                  <span className={`inline-flex items-center gap-1 font-black text-sm ${diff < 0 ? 'text-rose-500' : diff > 0 ? 'text-emerald-500' : 'text-slate-400'}`}>
+                                    {diff > 0 && '+'}
+                                    {diff}
+                                  </span>
+                                </td>
+                                <td className={`px-6 py-4 text-right font-black text-sm ${adjustment < 0 ? 'text-rose-600' : adjustment > 0 ? 'text-emerald-600' : 'text-slate-900'}`}>
+                                  {adjustment.toLocaleString(undefined, { minimumFractionDigits: 2, style: 'currency', currency: 'DOP' })}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
               </div>
-
-              {/* Buttons */}
-
-              <div className="flex gap-4 mb-10">
-
-                <button
-                  onClick={downloadExcel}
-                  className="bg-indigo-600 text-white px-8 py-4 rounded-2xl font-black"
-                >
-                  Generar Excel
-                </button>
-
-                <button
-                  onClick={() => {
-
-                    setFile(null);
-
-                    setInventoryData([]);
-                  }}
-                  className="bg-slate-200 px-8 py-4 rounded-2xl font-black"
-                >
-                  Nuevo
-                </button>
-              </div>
-
-              {/* Table */}
-
-              <div className="overflow-auto border rounded-3xl">
-
-                <table className="w-full">
-
-                  <thead className="bg-slate-900 text-white">
-
-                    <tr>
-                      <th className="p-4">Artículo</th>
-                      <th className="p-4">Descripción</th>
-                      <th className="p-4">Físico</th>
-                      <th className="p-4">Teórico</th>
-                      <th className="p-4">Costo</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-
-                    {inventoryData.map(
-                      (item, idx) => (
-
-                      <tr
-                        key={idx}
-                        className="border-b"
-                      >
-                        <td className="p-4">
-                          {item.articulo}
-                        </td>
-
-                        <td className="p-4">
-                          {item.descripcion}
-                        </td>
-
-                        <td className="p-4">
-                          {item.cantidadFisica}
-                        </td>
-
-                        <td className="p-4">
-                          {item.cantidadTeorica}
-                        </td>
-
-                        <td className="p-4">
-                          {
-                            item.costoUnitario
-                          }
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Toast */}
-
+      {/* Toast Notification */}
       <AnimatePresence>
-
         {toast && (
-
-          <motion.div
-            initial={{
-              opacity: 0,
-              y: 40
-            }}
-            animate={{
-              opacity: 1,
-              y: 0
-            }}
-            exit={{
-              opacity: 0,
-              y: 40
-            }}
-            className="fixed bottom-10 left-1/2 -translate-x-1/2"
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9, y: 40, x: '-50%' }}
+            animate={{ opacity: 1, scale: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, scale: 0.9, y: 20, x: '-50%' }}
+            className="fixed bottom-10 left-1/2 z-[100]"
           >
-
-            <div
-              className={`px-8 py-5 rounded-2xl shadow-2xl flex items-center gap-4 text-white font-bold ${
-                toast.type === 'error'
-                  ? 'bg-rose-600'
-                  : toast.type === 'success'
-                  ? 'bg-emerald-600'
-                  : 'bg-indigo-600'
-              }`}
-            >
-
-              {toast.type === 'error'
-                ? <AlertCircle />
-                : toast.type === 'success'
-                ? <CheckCircle />
-                : <FileText />
-              }
-
-              {toast.message}
+            <div className={`px-8 py-5 rounded-[1.5rem] shadow-2xl flex items-center gap-4 border-2 ${
+              toast.type === 'error' ? 'bg-rose-950 border-rose-800 text-rose-100' : 
+              toast.type === 'success' ? 'bg-slate-950 border-slate-800 text-white' : 
+              'bg-indigo-950 border-indigo-900 text-indigo-100'
+            }`}>
+              <div className={`p-2 rounded-lg ${toast.type === 'error' ? 'bg-rose-500' : toast.type === 'success' ? 'bg-emerald-500' : 'bg-indigo-500'}`}>
+                {toast.type === 'error' ? <AlertCircle className="w-5 h-5 text-white" /> : 
+                 toast.type === 'success' ? <CheckCircle className="w-5 h-5 text-white" /> : 
+                 <FileText className="w-5 h-5 text-white" />}
+              </div>
+              <span className="font-bold text-sm tracking-tight">{toast.message}</span>
             </div>
           </motion.div>
         )}
