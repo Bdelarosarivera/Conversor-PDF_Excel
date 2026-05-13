@@ -5,9 +5,7 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-
-  // IMPORTANTE
-  base: '/Conversor-PDF_Excel/',
+  base: './',
 
   resolve: {
     alias: {
@@ -24,3 +22,4 @@ export default defineConfig({
     sourcemap: false,
   },
 });
+
