@@ -8,14 +8,15 @@ import {
   ClipboardList,
   FileSpreadsheet,
   TrendingDown,
-  TrendingUp,
-  DollarSign
+  TrendingUp
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'motion/react';
 
 import * as pdfjs from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
+
+import Tesseract from 'tesseract.js';
 
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
@@ -54,7 +55,9 @@ interface ProcessState {
 export default function App() {
   const [file, setFile] = useState<File | null>(null);
 
-  const [inventoryData, setInventoryData] = useState<InventoryRow[]>([]);
+  const [inventoryData, setInventoryData] = useState<
+    InventoryRow[]
+  >([]);
 
   const [formulario, setFormulario] =
     useState<FormularioAjuste>({
@@ -81,6 +84,10 @@ export default function App() {
   const fileInputRef =
     useRef<HTMLInputElement>(null);
 
+  // =========================================================
+  // TOAST
+  // =========================================================
+
   const showToast = (
     message: string,
     type: 'success' | 'error' | 'info' = 'info'
@@ -92,6 +99,10 @@ export default function App() {
     }, 4000);
   };
 
+  // =========================================================
+  // PROGRESS
+  // =========================================================
+
   const updateProgress = (
     progress: number,
     message: string
@@ -102,6 +113,10 @@ export default function App() {
       message
     }));
   };
+
+  // =========================================================
+  // LIMPIAR NUMERO
+  // =========================================================
 
   const cleanNumber = (val: string): number => {
     if (!val) return 0;
@@ -116,172 +131,308 @@ export default function App() {
   };
 
   // =========================================================
+  // OCR LOCAL
+  // =========================================================
+
+  const runOCR = async (
+    canvas: HTMLCanvasElement
+  ) => {
+    const result = await Tesseract.recognize(
+      canvas,
+      'spa',
+      {
+        langPath: '/Conversor-PDF_Excel/tessdata'
+      }
+    );
+
+    return result.data.text;
+  };
+
+  // =========================================================
   // PROCESAR PDF
   // =========================================================
-const processPDF = async (pdfFile: File) => {
 
-  setState({
-    isProcessing: true,
-    progress: 0,
-    message: 'Procesando PDF...'
-  });
-
-  setInventoryData([]);
-
-  try {
-
-    const arrayBuffer = await pdfFile.arrayBuffer();
-
-    if (arrayBuffer.byteLength === 0) {
-      throw new Error('PDF vacío');
-    }
-
-    const loadingTask = pdfjs.getDocument({
-      data: arrayBuffer
+  const processPDF = async (
+    pdfFile: File
+  ) => {
+    setState({
+      isProcessing: true,
+      progress: 0,
+      message: 'Procesando PDF...'
     });
 
-    const pdf = await loadingTask.promise;
+    setInventoryData([]);
 
-    const totalPages = pdf.numPages;
+    try {
+      const arrayBuffer =
+        await pdfFile.arrayBuffer();
 
-    let extractedRows: string[][] = [];
+      if (arrayBuffer.byteLength === 0) {
+        throw new Error('PDF vacío');
+      }
 
-    for (let i = 1; i <= totalPages; i++) {
+      const loadingTask =
+        pdfjs.getDocument({
+          data: arrayBuffer
+        });
 
-      updateProgress(
-        (i / totalPages) * 100,
-        `Leyendo página ${i} de ${totalPages}`
-      );
+      const pdf =
+        await loadingTask.promise;
 
-      const page = await pdf.getPage(i);
+      const totalPages =
+        pdf.numPages;
 
-      const textContent =
-        await page.getTextContent();
+      let extractedRows: string[][] =
+        [];
 
-      const items = textContent.items as any[];
+      // =====================================================
+      // EXTRAER TEXTO NORMAL
+      // =====================================================
 
-      items.forEach((item) => {
-
-        if (!item.str) return;
-
-        const text =
-          String(item.str).trim();
-
-        if (text.length < 2) return;
-
-        const split =
-          text.split(/\s{2,}/);
-
-        if (split.length >= 2) {
-
-          extractedRows.push(split);
-
-        } else {
-
-          extractedRows.push([
-            text,
-            text
-          ]);
-        }
-      });
-    }
-
-    // FALLBACK:
-    // SI NO HAY TEXTO
-
-    if (extractedRows.length === 0) {
-
-      throw new Error(
-        'Este PDF es una imagen escaneada y GitHub Pages bloquea OCR online.'
-      );
-    }
-
-    const processedInventory: InventoryRow[] =
-      extractedRows
-
-        .map((row, index) => {
-
-          const numbers =
-            row
-              .map(r => cleanNumber(r))
-              .filter(n => n > 0);
-
-          return {
-
-            articulo:
-              `ITEM-${index + 1}`,
-
-            descripcion:
-              row.join(' '),
-
-            unidad: 'UND',
-
-            cantidadFisica:
-              numbers[0] || 0,
-
-            cantidadTeorica:
-              numbers[1] || 0,
-
-            costoUnitario:
-              numbers[2] || 0,
-
-            familia: 'General',
-
-            clasificacion: 'A',
-
-            marca: 'N/A',
-
-            referencia:
-              `REF-${index + 1}`,
-
-            ubicacion:
-              'Almacén'
-          };
-        })
-
-        .filter(item =>
-          item.descripcion.length > 3
+      for (
+        let i = 1;
+        i <= totalPages;
+        i++
+      ) {
+        updateProgress(
+          (i / totalPages) * 40,
+          `Leyendo página ${i} de ${totalPages}`
         );
 
-    if (processedInventory.length === 0) {
+        const page =
+          await pdf.getPage(i);
 
-      throw new Error(
-        'No se pudo interpretar el PDF.'
+        const textContent =
+          await page.getTextContent();
+
+        const items =
+          textContent.items as any[];
+
+        items.forEach(item => {
+          if (!item.str) return;
+
+          const text = String(
+            item.str
+          ).trim();
+
+          if (text.length < 2)
+            return;
+
+          const split =
+            text.split(/\s{2,}/);
+
+          if (split.length >= 2) {
+            extractedRows.push(split);
+          } else {
+            extractedRows.push([
+              text,
+              text
+            ]);
+          }
+        });
+      }
+
+      // =====================================================
+      // OCR SI NO HAY TEXTO
+      // =====================================================
+
+      if (extractedRows.length < 10) {
+        updateProgress(
+          50,
+          'PDF escaneado detectado. Ejecutando OCR...'
+        );
+
+        for (
+          let i = 1;
+          i <= totalPages;
+          i++
+        ) {
+          updateProgress(
+            50 +
+              (i / totalPages) * 40,
+            `OCR página ${i} de ${totalPages}`
+          );
+
+          const page =
+            await pdf.getPage(i);
+
+          const viewport =
+            page.getViewport({
+              scale: 2
+            });
+
+          const canvas =
+            document.createElement(
+              'canvas'
+            );
+
+          const context =
+            canvas.getContext('2d');
+
+          if (!context) continue;
+
+          canvas.width =
+            viewport.width;
+
+          canvas.height =
+            viewport.height;
+
+          await page.render({
+            canvasContext:
+              context as any,
+            viewport
+          } as any).promise;
+
+          const text =
+            await runOCR(canvas);
+
+          const lines =
+            text.split('\n');
+
+          lines.forEach(line => {
+            const clean =
+              line.trim();
+
+            if (
+              clean.length < 3
+            )
+              return;
+
+            const split =
+              clean.split(
+                /\s{2,}/
+              );
+
+            if (
+              split.length >= 2
+            ) {
+              extractedRows.push(
+                split
+              );
+            } else {
+              extractedRows.push([
+                clean,
+                clean
+              ]);
+            }
+          });
+        }
+      }
+
+      // =====================================================
+      // VALIDAR DATOS
+      // =====================================================
+
+      if (
+        extractedRows.length === 0
+      ) {
+        throw new Error(
+          'No se encontró texto legible dentro del PDF.'
+        );
+      }
+
+      // =====================================================
+      // CREAR INVENTARIO
+      // =====================================================
+
+      const processedInventory: InventoryRow[] =
+        extractedRows
+          .map((row, index) => {
+            const numbers = row
+              .map(r =>
+                cleanNumber(r)
+              )
+              .filter(
+                n =>
+                  !isNaN(n)
+              );
+
+            return {
+              articulo: `ITEM-${
+                index + 1
+              }`,
+
+              descripcion:
+                row.join(' '),
+
+              unidad: 'UND',
+
+              cantidadFisica:
+                numbers[0] || 0,
+
+              cantidadTeorica:
+                numbers[1] || 0,
+
+              costoUnitario:
+                numbers[2] || 0,
+
+              familia:
+                'General',
+
+              clasificacion:
+                'A',
+
+              marca: 'N/A',
+
+              referencia: `REF-${
+                index + 1
+              }`,
+
+              ubicacion:
+                'Almacén'
+            };
+          })
+
+          .filter(
+            item =>
+              item.descripcion
+                .trim()
+                .length > 3
+          );
+
+      if (
+        processedInventory.length ===
+        0
+      ) {
+        throw new Error(
+          'No se pudo interpretar el PDF.'
+        );
+      }
+
+      setInventoryData(
+        processedInventory
       );
+
+      showToast(
+        'PDF procesado correctamente',
+        'success'
+      );
+    } catch (err: any) {
+      console.error(err);
+
+      showToast(
+        err.message ||
+          'Error procesando PDF',
+        'error'
+      );
+    } finally {
+      setState(prev => ({
+        ...prev,
+        isProcessing: false
+      }));
     }
-
-    setInventoryData(processedInventory);
-
-    showToast(
-      'PDF procesado correctamente',
-      'success'
-    );
-
-  } catch (err: any) {
-
-    console.error(err);
-
-    showToast(
-      err.message || 'Error procesando PDF',
-      'error'
-    );
-
-  } finally {
-
-    setState(prev => ({
-      ...prev,
-      isProcessing: false
-    }));
-  }
-};
+  };
 
   // =========================================================
-  // MANEJO ARCHIVO
+  // HANDLE FILE
   // =========================================================
 
-  const handleFile = (file: File) => {
+  const handleFile = (
+    file: File
+  ) => {
     if (
-      file.type !== 'application/pdf'
+      file.type !==
+      'application/pdf'
     ) {
       showToast(
         'Por favor selecciona un PDF.',
@@ -311,7 +462,6 @@ const processPDF = async (pdfFile: File) => {
       const wb =
         XLSX.utils.book_new();
 
-      // SHEET 1
       const ajusteData =
         inventoryData.map(item => {
           const diff =
@@ -356,30 +506,31 @@ const processPDF = async (pdfFile: File) => {
         'Ajuste_Contable'
       );
 
-      // SHEET 2
       const detalleData =
-        inventoryData.map(item => ({
-          Articulo:
-            item.articulo,
+        inventoryData.map(
+          item => ({
+            Articulo:
+              item.articulo,
 
-          Familia:
-            item.familia,
+            Familia:
+              item.familia,
 
-          Clasificacion:
-            item.clasificacion,
+            Clasificacion:
+              item.clasificacion,
 
-          Marca:
-            item.marca,
+            Marca:
+              item.marca,
 
-          Referencia:
-            item.referencia,
+            Referencia:
+              item.referencia,
 
-          Ubicacion:
-            item.ubicacion,
+            Ubicacion:
+              item.ubicacion,
 
-          Cantidad:
-            item.cantidadFisica
-        }));
+            Cantidad:
+              item.cantidadFisica
+          })
+        );
 
       const ws2 =
         XLSX.utils.json_to_sheet(
@@ -392,7 +543,6 @@ const processPDF = async (pdfFile: File) => {
         'Detalle_Inventario'
       );
 
-      // SHEET 3
       const formRows = [
         ['CONCEPTO', 'VALOR'],
         [
@@ -453,6 +603,10 @@ const processPDF = async (pdfFile: File) => {
     }
   };
 
+  // =========================================================
+  // TOTALES
+  // =========================================================
+
   const totalAjuste =
     inventoryData.reduce(
       (acc, curr) =>
@@ -463,9 +617,14 @@ const processPDF = async (pdfFile: File) => {
       0
     );
 
+  // =========================================================
+  // UI
+  // =========================================================
+
   return (
     <div className="min-h-screen bg-[#f8fafc] font-sans text-[#0f172a]">
       <div className="max-w-6xl mx-auto py-12 px-6">
+
         <motion.div
           initial={{
             opacity: 0,
@@ -489,13 +648,13 @@ const processPDF = async (pdfFile: File) => {
             </div>
 
             <p className="text-slate-500 font-semibold text-sm">
-              Sistema de Procesamiento
-              Inventario
+              Sistema de Procesamiento Inventario
             </p>
           </div>
         </motion.div>
 
         <div className="bg-white rounded-3xl shadow-xl border border-slate-200 p-8">
+
           {!file &&
             !state.isProcessing && (
               <div
@@ -554,6 +713,7 @@ const processPDF = async (pdfFile: File) => {
 
           {state.isProcessing && (
             <div className="py-20 flex flex-col items-center justify-center text-center space-y-6">
+
               <RefreshCw className="w-16 h-16 animate-spin text-indigo-600" />
 
               <div>
@@ -574,7 +734,9 @@ const processPDF = async (pdfFile: File) => {
           {inventoryData.length > 0 &&
             !state.isProcessing && (
               <div className="space-y-8">
+
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+
                   <div className="bg-slate-900 text-white p-6 rounded-2xl">
                     <div className="text-xs uppercase mb-2">
                       Artículos
@@ -633,7 +795,9 @@ const processPDF = async (pdfFile: File) => {
                 </div>
 
                 <div className="flex flex-col lg:flex-row gap-6">
+
                   <div className="flex-1 bg-white border border-slate-200 rounded-3xl p-8">
+
                     <div className="flex items-center gap-3 mb-6">
                       <ClipboardList className="text-indigo-600 w-6 h-6" />
 
@@ -643,6 +807,7 @@ const processPDF = async (pdfFile: File) => {
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+
                       <input
                         type="text"
                         value={
@@ -683,6 +848,7 @@ const processPDF = async (pdfFile: File) => {
                   </div>
 
                   <div className="w-full lg:w-80 flex flex-col gap-4">
+
                     <button
                       onClick={
                         downloadExcel
