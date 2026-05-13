@@ -358,3 +358,4 @@ const processPDF = async (pdfFile: File) => {
     }));
   }
 };
+export default App;
