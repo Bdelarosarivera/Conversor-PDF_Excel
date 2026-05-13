@@ -1,12 +1,16 @@
 
 
-export default function App()
-const processPDF = async (pdfFile: File) => {
-  setState({
-    isProcessing: true,
-    progress: 0,
-    message: 'Analizando estructura contable...'
-  });
+import { useState, useRef } from 'react';
+
+export default function App() {
+
+  const processPDF = async (pdfFile: File) => {
+
+    setState({
+      isProcessing: true,
+      progress: 0,
+      message: 'Analizando estructura contable...'
+    });
 
   setInventoryData([]);
 
