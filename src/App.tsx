@@ -13,7 +13,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import * as pdfjs from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
-import { createWorker } from 'tesseract.js';
+import Tesseract from 'tesseract.js';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 // CONFIGURAR PDF.Je
