@@ -16,7 +16,7 @@ import * as XLSX from 'xlsx';
 import Tesseract from 'tesseract.js';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-// CONFIGURAR PDF.JS
+// CONFIGURAR PDF.J
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 interface InventoryRow {
