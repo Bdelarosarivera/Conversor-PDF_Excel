@@ -1,23 +1,18 @@
-
 import { useState, useRef } from 'react';
 
 import {
   FileText,
-  RefreshCw,
   CheckCircle,
   AlertCircle,
   Calculator,
-  ClipboardList,
-  FileSpreadsheet,
   TrendingDown,
   TrendingUp,
-  DollarSign,
   Loader2
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'motion/react';
 
-import * as pdfjs from 'pdfjs-dist/legacy/build/pdf';
+import * as pdfjs from 'pdfjs-dist';
 
 import * as XLSX from 'xlsx';
 
@@ -25,9 +20,8 @@ import Tesseract from 'tesseract.js';
 
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-
-// PDF Worker
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+
 
 interface InventoryRow {
   articulo: string;
