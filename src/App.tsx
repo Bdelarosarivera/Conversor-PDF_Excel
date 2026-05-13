@@ -108,12 +108,18 @@ export default function App() {
 
 
 
-  const runOCR = async (
+const runOCR = async (
   canvas: HTMLCanvasElement
 ): Promise<string> => {
+  let worker: any = null;
+
   try {
-    const worker = await Tesseract.createWorker('spa', 1, {
+    worker = await createWorker('spa', 1, {
+      langPath: `${import.meta.env.BASE_URL}tessdata`,
+      
       logger: (m) => {
+        console.log(m);
+
         if (
           m.status ===
           'recognizing text'
@@ -125,24 +131,23 @@ export default function App() {
           );
         }
       },
-
-      // RUTA LOCAL
-      langPath: `${import.meta.env.BASE_URL}tessdata`,
     });
 
     const result =
       await worker.recognize(canvas);
 
-    await worker.terminate();
-
     return result.data.text;
   } catch (error) {
     console.error(
-      'Error en OCR:',
+      'OCR ERROR:',
       error
     );
 
     return '';
+  } finally {
+    if (worker) {
+      await worker.terminate();
+    }
   }
 };
 
