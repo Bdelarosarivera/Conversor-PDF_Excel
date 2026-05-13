@@ -21,7 +21,6 @@ import * as XLSX from 'xlsx';
 import { createWorker } from 'tesseract.js';
 // Worker configured once in main.tsx — no re-import needed here.
 
-
 interface InventoryRow {
   articulo: string;
   descripcion: string;
