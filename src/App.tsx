@@ -100,38 +100,40 @@ export default function App() {
     return isNaN(num) ? 0 : num;
   };
 
-  // ========================================================
+  // ======================================================== // ========================================================
   // OCR MEJORADO - EJECUTA SIEMPRE
-  // ========================================================
+  // ======================================================== // ========================================================
 
 
-  
+
+
 
   const runOCR = async (
   canvas: HTMLCanvasElement
 ): Promise<string> => {
   try {
-    const result = await Tesseract.recognize(
-      canvas,
-      'spa',
-      {
-        // RUTA CORRECTA
-        langPath: `${import.meta.env.BASE_URL}tessdata`,
+    const worker = await Tesseract.createWorker('spa', 1, {
+      logger: (m) => {
+        if (
+          m.status ===
+          'recognizing text'
+        ) {
+          console.log(
+            `OCR Progress: ${Math.round(
+              m.progress * 100
+            )}%`
+          );
+        }
+      },
 
-        logger: (m) => {
-          if (
-            m.status ===
-            'recognizing text'
-          ) {
-            console.log(
-              `OCR Progress: ${Math.round(
-                m.progress * 100
-              )}%`
-            );
-          }
-        },
-      }
-    );
+      // RUTA LOCAL
+      langPath: `${import.meta.env.BASE_URL}tessdata`,
+    });
+
+    const result =
+      await worker.recognize(canvas);
+
+    await worker.terminate();
 
     return result.data.text;
   } catch (error) {
@@ -144,11 +146,16 @@ export default function App() {
   }
 };
 
+
+
+
   
 
-  // ========================================================
+  
+
+  // ======================================================== // ========================================================
   // EXTRAER TEXTO NATIVO DE PDF
-  // ========================================================
+  // ======================================================== // ========================================================
   const extractNativeText = async (
     pdf: any,
     totalPages: number
