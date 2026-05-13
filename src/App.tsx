@@ -1,3 +1,6 @@
+
+
+export default function App()
 const processPDF = async (pdfFile: File) => {
   setState({
     isProcessing: true,
