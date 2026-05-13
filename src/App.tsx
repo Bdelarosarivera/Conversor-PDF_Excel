@@ -123,308 +123,137 @@ const processPDF = async (pdfFile: File) => {
   setState({
     isProcessing: true,
     progress: 0,
-    message: 'Analizando estructura contable...'
+    message: 'Procesando PDF...'
   });
 
   setInventoryData([]);
-
-  let worker: any = null;
 
   try {
 
     const arrayBuffer = await pdfFile.arrayBuffer();
 
     if (arrayBuffer.byteLength === 0) {
-      throw new Error('El archivo PDF está vacío.');
+      throw new Error('PDF vacío');
     }
 
     const loadingTask = pdfjs.getDocument({
-      data: arrayBuffer,
-      cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/cmaps/`,
-      cMapPacked: true,
+      data: arrayBuffer
     });
 
     const pdf = await loadingTask.promise;
 
     const totalPages = pdf.numPages;
 
-    let allExtractedRows: string[][] = [];
-
-    const ROW_TOLERANCE = 3;
-
-    // =========================================
-    // EXTRACCIÓN NORMAL
-    // =========================================
+    let extractedRows: string[][] = [];
 
     for (let i = 1; i <= totalPages; i++) {
 
       updateProgress(
-        (i / totalPages) * 40,
-        `Leyendo página ${i} de ${totalPages}...`
+        (i / totalPages) * 100,
+        `Leyendo página ${i} de ${totalPages}`
       );
 
       const page = await pdf.getPage(i);
 
-      const textContent = await page.getTextContent();
+      const textContent =
+        await page.getTextContent();
 
-      const rows: { y: number; items: any[] }[] = [];
+      const items = textContent.items as any[];
 
-      textContent.items.forEach((item: any) => {
+      items.forEach((item) => {
 
-        if ('transform' in item) {
+        if (!item.str) return;
 
-          const y = item.transform[5];
+        const text =
+          String(item.str).trim();
 
-          let foundRow = rows.find(
-            r => Math.abs(r.y - y) <= ROW_TOLERANCE
-          );
+        if (text.length < 2) return;
 
-          if (!foundRow) {
+        const split =
+          text.split(/\s{2,}/);
 
-            foundRow = {
-              y,
-              items: []
-            };
+        if (split.length >= 2) {
 
-            rows.push(foundRow);
-          }
+          extractedRows.push(split);
 
-          foundRow.items.push(item);
-        }
-      });
+        } else {
 
-      rows.sort((a, b) => b.y - a.y);
-
-      rows.forEach(row => {
-
-        const items = row.items.sort(
-          (a, b) => a.transform[4] - b.transform[4]
-        );
-
-        if (items.length === 0) return;
-
-        const rowData: string[] = [];
-
-        let currentStr = items[0].str;
-
-        let lastX =
-          items[0].transform[4] +
-          (items[0].width || 0);
-
-        for (let j = 1; j < items.length; j++) {
-
-          const it = items[j];
-
-          const gap = it.transform[4] - lastX;
-
-          const minGap = it.height
-            ? it.height * 0.4
-            : 8;
-
-          if (gap > minGap) {
-
-            rowData.push(currentStr.trim());
-
-            currentStr = it.str;
-
-          } else {
-
-            currentStr +=
-              (currentStr.endsWith(' ') ||
-              it.str.startsWith(' ')
-                ? ''
-                : ' ') + it.str;
-          }
-
-          lastX =
-            it.transform[4] +
-            (it.width || 0);
-        }
-
-        rowData.push(currentStr.trim());
-
-        if (
-          rowData.some(cell => cell.length > 0)
-        ) {
-          allExtractedRows.push(rowData);
+          extractedRows.push([
+            text,
+            text
+          ]);
         }
       });
     }
 
-    // =========================================
-    // OCR SI NO HAY TEXTO
-    // =========================================
+    // FALLBACK:
+    // SI NO HAY TEXTO
 
-    if (allExtractedRows.length < 5) {
-
-      updateProgress(
-        45,
-        'Activando OCR para PDF escaneado...'
-      );
-
-      worker = await createWorker('eng');
-
-      const maxPages = Math.min(totalPages, 3);
-
-      for (let i = 1; i <= maxPages; i++) {
-
-        updateProgress(
-          45 + (i / maxPages) * 45,
-          `Procesando OCR página ${i}...`
-        );
-
-        try {
-
-          const page = await pdf.getPage(i);
-
-          const viewport = page.getViewport({
-            scale: 2.5
-          });
-
-          const canvas =
-            document.createElement('canvas');
-
-          const context =
-            canvas.getContext('2d');
-
-          if (!context) continue;
-
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
-
-          await page.render({
-            canvasContext: context as any,
-            viewport
-          } as any).promise;
-
-          const result = await worker.recognize(canvas);
-
-          const text =
-            result.data.text || '';
-
-          const lines = text.split('\n');
-
-          lines.forEach(line => {
-
-            const cleanLine = line.trim();
-
-            if (cleanLine.length < 5) return;
-
-            const rowData =
-              cleanLine.split(/\s{2,}/);
-
-            if (rowData.length >= 2) {
-
-              allExtractedRows.push(rowData);
-            }
-          });
-
-        } catch (ocrError) {
-
-          console.error(
-            'Error OCR página:',
-            i,
-            ocrError
-          );
-        }
-      }
-    }
-
-    // =========================================
-    // VALIDAR DATOS
-    // =========================================
-
-    if (allExtractedRows.length === 0) {
+    if (extractedRows.length === 0) {
 
       throw new Error(
-        'No se encontró texto legible dentro del PDF.'
+        'Este PDF es una imagen escaneada y GitHub Pages bloquea OCR online.'
       );
     }
 
-    // =========================================
-    // MAPEO INVENTARIO
-    // =========================================
-
     const processedInventory: InventoryRow[] =
-      allExtractedRows
+      extractedRows
 
-        .filter(row => row.length >= 2)
+        .map((row, index) => {
 
-        .map(row => {
-
-          const numericCells =
+          const numbers =
             row
-              .map(c => ({
-                original: c,
-                val: cleanNumber(c)
-              }))
-
-              .filter(
-                c =>
-                  c.val !== 0 ||
-                  /^[0]$/.test(
-                    c.original.trim()
-                  )
-              );
+              .map(r => cleanNumber(r))
+              .filter(n => n > 0);
 
           return {
 
             articulo:
-              row[0] || 'N/A',
+              `ITEM-${index + 1}`,
 
             descripcion:
-              row[1] ||
-              'Sin descripción',
+              row.join(' '),
 
-            unidad:
-              row.find(c =>
-                /^(UND|PCS|CAJA|KG|LBS|GR|UD|UNID)$/i.test(
-                  c.trim()
-                )
-              ) || 'UND',
+            unidad: 'UND',
 
             cantidadFisica:
-              numericCells[0]?.val || 0,
+              numbers[0] || 0,
 
             cantidadTeorica:
-              numericCells[1]?.val ||
-              numericCells[0]?.val ||
-              0,
+              numbers[1] || 0,
 
             costoUnitario:
-              numericCells[
-                numericCells.length - 1
-              ]?.val || 0,
+              numbers[2] || 0,
 
             familia: 'General',
 
             clasificacion: 'A',
 
-            marca: 'Varios',
+            marca: 'N/A',
 
             referencia:
-              row[0] || '',
+              `REF-${index + 1}`,
 
             ubicacion:
-              'Almacén Central'
+              'Almacén'
           };
         })
 
         .filter(item =>
-          item.articulo.length > 1
+          item.descripcion.length > 3
         );
 
     if (processedInventory.length === 0) {
 
       throw new Error(
-        'No se pudo interpretar el inventario.'
+        'No se pudo interpretar el PDF.'
       );
     }
 
     setInventoryData(processedInventory);
 
     showToast(
-      '¡Auditoría completada!',
+      'PDF procesado correctamente',
       'success'
     );
 
@@ -438,18 +267,6 @@ const processPDF = async (pdfFile: File) => {
     );
 
   } finally {
-
-    if (worker) {
-
-      try {
-
-        await worker.terminate();
-
-      } catch (e) {
-
-        console.error(e);
-      }
-    }
 
     setState(prev => ({
       ...prev,
