@@ -60,6 +60,8 @@ interface ProcessState {
 export default function App() {
   const [file, setFile] = useState<File | null>(null);
   const [inventoryData, setInventoryData] = useState<InventoryRow[]>([]);
+  const latestProcessRef = useRef<number>(0);
+  
   const [formulario, setFormulario] = useState<FormularioAjuste>({
     fecha: new Date().toLocaleDateString(),
     realizadoPor: 'Generado por Sistema',
@@ -69,12 +71,13 @@ export default function App() {
     planAccion: 'Sincronización de stock'
   });
   
-  const [state, setState] = useState<ProcessState>({
+  const [state, setState] = useState<ProcessState & { processingId: number }>({
     progress: 0,
     message: '',
     isProcessing: false,
     phase: 0,
-    rawPageTexts: {}
+    rawPageTexts: {},
+    processingId: 0
   });
 
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -93,32 +96,52 @@ export default function App() {
 
   const cleanNumber = (val: string): number => {
     if (!val) return 0;
-    // Remove currency symbols, commas, and spaces
-    const cleaned = val.replace(/[RD$€£\s,]/g, '');
+    // Remove currency symbols, commas, and spaces. Handle negative symbols like "- 7" or "(7)"
+    let cleaned = val.replace(/[RD$€£\s,]/g, '');
+    if (cleaned.startsWith('(') && cleaned.endsWith(')')) {
+      cleaned = '-' + cleaned.slice(1, -1);
+    }
     const num = parseFloat(cleaned);
     return isNaN(num) ? 0 : num;
   };
 
   const processPDF = async (pdfFile: File) => {
+    const pId = Date.now();
+    latestProcessRef.current = pId;
+    console.log(`[AUDITOR] Iniciando proceso ID ${pId} para: ${pdfFile.name}`);
+    
+    // Immediate reset of all relevant data
+    setInventoryData([]);
+    setFile(null); // Clear file during process
+    
     setState({ 
       isProcessing: true, 
       progress: 0, 
-      message: 'AUDITORÍA: FASE 1 - LECTURA Y OCR...',
+      message: 'LIMPIANDO DATOS ANTERIORES...',
       phase: 1,
-      rawPageTexts: {}
+      rawPageTexts: {},
+      processingId: pId
     });
-    setInventoryData([]);
 
+    let pdf: any = null;
     try {
+      // Small pause to ensure UI reflects the "cleaning" state
+      await new Promise(r => setTimeout(r, 200));
+
       const arrayBuffer = await pdfFile.arrayBuffer();
+      if (latestProcessRef.current !== pId) return;
+
       const loadingTask = pdfjs.getDocument({ 
         data: arrayBuffer,
         cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/cmaps/`,
         cMapPacked: true,
       });
 
-      const pdf = await loadingTask.promise;
+      pdf = await loadingTask.promise;
+      if (latestProcessRef.current !== pId) return;
+      
       const totalPages = pdf.numPages;
+      setFile(pdfFile); // Set file now that we know we are processing it successfully
       
       // ===============================================
       // FASE 1 – LECTURA Y OCR (OBLIGATORIA)
@@ -127,10 +150,9 @@ export default function App() {
       const pageData: any[] = [];
       let totalTextItems = 0;
       
-      // CHANGE: Yield to event loop to keep UI responsive during extraction
       updateProgress(10, "FASE 1: Extrayendo texto crudo por página...", 1);
       for (let i = 1; i <= totalPages; i++) {
-        await new Promise(r => setTimeout(r, 0)); 
+        if (latestProcessRef.current !== pId) return;
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
         const rawText = textContent.items.map((it: any) => it.str).join(' ');
@@ -139,27 +161,16 @@ export default function App() {
         totalTextItems += textContent.items.length;
         updateProgress(10 + (i / totalPages) * 15, `Leyendo texto pág ${i}/${totalPages}...`);
       }
-      // END CHANGE
 
       // Check for scanned PDF
       let ocrDataRows: string[][] = [];
-      if (totalTextItems < totalPages * 10) {
-        // CHANGE: Memory-safe and non-blocking OCR loop with detailed feedback
+      if (totalTextItems < totalPages * 5) { // Lower threshold to trigger OCR more reliably if needed
         updateProgress(25, "Cargando motor OCR Tesseract...", 1);
         
         try {
-          // Worker created with explicit language loading feedback
-          const worker = await createWorker('spa', 1, {
-            logger: m => {
-              if (typeof m.progress === 'number' && m.status === 'loading tesseract core') {
-                console.log('Tesseract Loading:', m.progress);
-              }
-            }
-          });
-
+          const worker = await createWorker('spa', 1);
           for (let i = 1; i <= totalPages; i++) {
-            // Give UI a moment to breathe
-            await new Promise(r => setTimeout(r, 10)); 
+            if (latestProcessRef.current !== pId) break;
             
             updateProgress(25 + ((i - 0.7) / totalPages) * 15, `Preparando pág ${i}/${totalPages}...`, 1);
             
@@ -173,7 +184,6 @@ export default function App() {
 
             if (context) {
               await page.render({ canvasContext: context as any, viewport: viewport } as any).promise;
-              
               updateProgress(25 + ((i - 0.3) / totalPages) * 15, `OCR: Escaneando pág ${i}/${totalPages}...`, 1);
               
               const { data: { text } } = await worker.recognize(canvas);
@@ -186,19 +196,16 @@ export default function App() {
                 }
               });
             }
-            
-            // Explicitly release resources
             canvas.width = 0;
             canvas.height = 0;
           }
           await worker.terminate();
         } catch (ocrError) {
           console.error("OCR Failure:", ocrError);
-          showToast("No se pudo iniciar OCR. ¿Hay conexión a internet?", "error");
         }
-        // END CHANGE
       }
       
+      if (latestProcessRef.current !== pId) return;
       setState(prev => ({ ...prev, rawPageTexts: pageTexts }));
       // END FASE 1
 
@@ -232,35 +239,52 @@ export default function App() {
             if (items.length === 0) return;
 
             const fullLine = items.map(it => it.str).join(' ').trim();
-            // Category detection
-            if (/^\d+\s+[A-Z\s]{4,}/.test(fullLine) && items.length < 8) {
+            const hasUnit = /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(fullLine) || items.some(it => /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(it.str.trim()));
+
+            // Category detection (Headers like "34 MALLAS CONSTRUCCION")
+            if (/^\d+\s+[A-Z\s]{4,}/.test(fullLine) && !hasUnit && items.length < 8) {
                const cleaned = fullLine.replace(/User|Fecha|Hora/gi, '').trim();
-               if (cleaned.length > 5) {
+               if (cleaned.length > 5 && !/^\d{4,}/.test(cleaned)) { // Avoid article numbers being caught as categories
                  if (currentFamilia === 'N/A') currentFamilia = cleaned;
                  else currentClasificacion = cleaned;
+                 return;
                }
-               return;
             }
 
-            // Entry detection
-            if (/^\d{3,12}$/.test(items[0].str.trim())) {
-              const rowData: string[] = [];
-              let currentCell = items[0].str;
-              let lastX = items[0].transform[4] + (items[0].width || 0);
+            // Entry detection - Looser Article ID detection to avoid missing rows
+            const firstToken = items[0].str.trim();
+            const isPotentialArticle = /^\d{2,12}$/.test(firstToken) || (items.length === 1 && /^\d{4,}\s+/.test(firstToken));
+            
+            if (isPotentialArticle && !fullLine.includes('Total General')) {
+              let rowData: string[] = [];
+              
+              if (items.length === 1 && firstToken.includes('  ')) {
+                rowData = firstToken.split(/\s{2,}/).filter(s => s.length > 0);
+              } else {
+                let currentCell = items[0].str;
+                let lastX = items[0].transform[4] + (items[0].width || 0);
 
-              for (let j = 1; j < items.length; j++) {
-                const it = items[j];
-                const gap = it.transform[4] - lastX;
-                if (gap > (it.height || 8) * 0.5) { 
-                  rowData.push(currentCell.trim());
-                  currentCell = it.str;
-                } else {
-                  currentCell += (currentCell.endsWith(' ') ? '' : ' ') + it.str;
+                for (let j = 1; j < items.length; j++) {
+                  const it = items[j];
+                  const gap = it.transform[4] - lastX;
+                  if (gap > (it.height || 8) * 0.35) { // Slightly tighter gap for columns
+                    rowData.push(currentCell.trim());
+                    currentCell = it.str;
+                  } else {
+                    currentCell += (currentCell.endsWith(' ') ? '' : ' ') + it.str;
+                  }
+                  lastX = it.transform[4] + (it.width || 0);
                 }
-                lastX = it.transform[4] + (it.width || 0);
+                rowData.push(currentCell.trim());
               }
-              rowData.push(currentCell.trim());
-              rawDataRows.push([currentFamilia, currentClasificacion, ...rowData]);
+
+              if (rowData.length >= 3) {
+                // If it looks like a header (mostly text, few numbers), ignore unless it's a row
+                const numCount = rowData.filter(s => /[0-9]/.test(s)).length;
+                if (numCount >= 2 || rowData[0].length > 4) {
+                   rawDataRows.push([currentFamilia, currentClasificacion, ...rowData]);
+                }
+              }
             }
           });
           updateProgress(40 + (i / totalPages) * 10, `Detectando tablas pág ${i+1}...`);
@@ -374,17 +398,26 @@ export default function App() {
       updateProgress(95, "FASE 5: Procesando índice de confiabilidad...", 5);
       
       if (final.length > 0) {
-        setInventoryData(final);
-        updateProgress(100, "FASE 6: Auditoría finalizada.", 6);
-        showToast("Auditoría completada exitosamente.", "success");
+        if (latestProcessRef.current === pId) {
+          setInventoryData(final);
+          updateProgress(100, "FASE 6: Auditoría finalizada.", 6);
+          showToast("Auditoría completada exitosamente.", "success");
+        }
       } else {
         throw new Error("No se pudo extraer una tabla de inventario válida.");
       }
     } catch (err: any) {
-      console.error(err);
-      showToast(err.message || "Error en proceso contable.", "error");
+      if (latestProcessRef.current === pId) {
+        console.error(err);
+        showToast(err.message || "Error en proceso contable.", "error");
+      }
     } finally {
-      setState(prev => ({ ...prev, isProcessing: false }));
+      if (latestProcessRef.current === pId) {
+        setState(prev => ({ ...prev, isProcessing: false }));
+      }
+      if (pdf) {
+        try { pdf.destroy(); } catch(e) {}
+      }
     }
   };
 
@@ -393,7 +426,11 @@ export default function App() {
       showToast("Por favor, selecciona un reporte de inventario en PDF.", "error");
       return;
     }
-    setFile(file);
+    
+    // Clear input to allow re-uploading same file / help memory
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    
+    // We don't call setFile(file) here because processPDF handles it
     processPDF(file);
   };
 
@@ -475,7 +512,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#f8fafc] font-sans text-[#0f172a] selection:bg-indigo-100">
-      <div className="max-w-6xl mx-auto py-12 px-6">
+      <div className="max-w-6xl mx-auto py-12 px-6" key={state.processingId}>
         {/* Header Section */}
         <motion.div 
           initial={{ opacity: 0, y: -20 }}
@@ -496,13 +533,13 @@ export default function App() {
             </p>
           </div>
           <div className="flex items-center gap-4">
-            <div className="bg-white border border-slate-200 px-4 py-3 rounded-xl shadow-sm text-center">
-              <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Estado de Auditoría</div>
-              <div className="flex items-center gap-2 text-emerald-600 font-bold text-sm">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                Motor IA Activo
+              <div className="bg-white border border-slate-200 px-4 py-3 rounded-xl shadow-sm text-center">
+                <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Estado de Auditoría</div>
+                <div className="flex items-center gap-2 text-emerald-600 font-bold text-sm">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  {state.processingId > 0 ? `ID: ${new Date(state.processingId).toLocaleTimeString()}` : 'Listo'}
+                </div>
               </div>
-            </div>
           </div>
         </motion.div>
 
