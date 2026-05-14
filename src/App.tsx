@@ -25,16 +25,16 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 interface InventoryRow {
-  articulo: string;
+  articulo: string; // codigo_articulo
   descripcion: string;
   unidad: string;
   motivo: string;
-  fisico: number;
-  teorico: number;
+  fisico: number; // cantidad_fisica
+  teorico: number; // cantidad_teorica
   costo_unitario: number;
   diferencia_unidades: number;
-  fisico_rd: number;
-  teorico_rd: number;
+  fisico_rd: number; // valor_fisico
+  teorico_rd: number; // valor_teorico
   ajuste_rd: number;
   familia: string;
   clasificacion: string;
@@ -61,10 +61,7 @@ export default function App() {
   const [file, setFile] = useState<File | null>(null);
   const [inventoryData, setInventoryData] = useState<InventoryRow[]>([]);
   const latestProcessRef = useRef<number>(0);
-
-  // ✅ CAMBIO: AbortController para cancelar procesos anteriores
-  const abortRef = useRef<AbortController | null>(null);
-
+  
   const [formulario, setFormulario] = useState<FormularioAjuste>({
     fecha: new Date().toLocaleDateString(),
     realizadoPor: 'Generado por Sistema',
@@ -73,7 +70,7 @@ export default function App() {
     problemas: 'N/A',
     planAccion: 'Sincronización de stock'
   });
-
+  
   const [state, setState] = useState<ProcessState & { processingId: number }>({
     progress: 0,
     message: '',
@@ -84,7 +81,7 @@ export default function App() {
   });
 
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
-
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
@@ -99,6 +96,7 @@ export default function App() {
 
   const cleanNumber = (val: string): number => {
     if (!val) return 0;
+    // Remove currency symbols, commas, and spaces. Handle negative symbols like "- 7" or "(7)"
     let cleaned = val.replace(/[RD$€£\s,]/g, '');
     if (cleaned.startsWith('(') && cleaned.endsWith(')')) {
       cleaned = '-' + cleaned.slice(1, -1);
@@ -108,49 +106,53 @@ export default function App() {
   };
 
   const processPDF = async (pdfFile: File) => {
-
-    // ✅ CAMBIO: cancelar proceso anterior REALMENTE
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
-    const { signal } = abortRef.current;
-
     const pId = Date.now();
     latestProcessRef.current = pId;
-
+    console.log(`[AUDITOR] Iniciando proceso ID ${pId} para: ${pdfFile.name}`);
+    
+    // Immediate reset of all relevant data
     setInventoryData([]);
-    setFile(null);
-
-    setState({
-      isProcessing: true,
-      progress: 0,
+    setFile(null); // Clear file during process
+    
+    setState({ 
+      isProcessing: true, 
+      progress: 0, 
       message: 'LIMPIANDO DATOS ANTERIORES...',
       phase: 1,
       rawPageTexts: {},
       processingId: pId
     });
 
-    await new Promise(r => setTimeout(r, 100));
-
     let pdf: any = null;
-
     try {
+      // Small pause to ensure UI reflects the "cleaning" state
+      await new Promise(r => setTimeout(r, 200));
+
       const arrayBuffer = await pdfFile.arrayBuffer();
-      if (signal.aborted) return;
+      if (latestProcessRef.current !== pId) return;
 
-      const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
+      const loadingTask = pdfjs.getDocument({ 
+        data: arrayBuffer,
+        cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/cmaps/`,
+        cMapPacked: true,
+      });
+
       pdf = await loadingTask.promise;
-      if (signal.aborted) return;
-
+      if (latestProcessRef.current !== pId) return;
+      
       const totalPages = pdf.numPages;
-      setFile(pdfFile);
-
+      setFile(pdfFile); // Set file now that we know we are processing it successfully
+      
+      // ===============================================
+      // FASE 1 – LECTURA Y OCR (OBLIGATORIA)
+      // ===============================================
       const pageTexts: Record<string, string> = {};
       const pageData: any[] = [];
       let totalTextItems = 0;
-
+      
       updateProgress(10, "FASE 1: Extrayendo texto crudo por página...", 1);
       for (let i = 1; i <= totalPages; i++) {
-        if (signal.aborted) return;
+        if (latestProcessRef.current !== pId) return;
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
         const rawText = textContent.items.map((it: any) => it.str).join(' ');
@@ -160,84 +162,264 @@ export default function App() {
         updateProgress(10 + (i / totalPages) * 15, `Leyendo texto pág ${i}/${totalPages}...`);
       }
 
+      // Check for scanned PDF
       let ocrDataRows: string[][] = [];
-      if (totalTextItems < totalPages * 5) {
-        const worker = await createWorker('spa', 1);
-        for (let i = 1; i <= totalPages; i++) {
-          if (signal.aborted) break;
-          const page = await pdf.getPage(i);
-          const viewport = page.getViewport({ scale: 1.5 });
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d')!;
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
+      if (totalTextItems < totalPages * 5) { // Lower threshold to trigger OCR more reliably if needed
+        updateProgress(25, "Cargando motor OCR Tesseract...", 1);
+        
+        try {
+          const worker = await createWorker('spa', 1);
+          for (let i = 1; i <= totalPages; i++) {
+            if (latestProcessRef.current !== pId) break;
+            
+            updateProgress(25 + ((i - 0.7) / totalPages) * 15, `Preparando pág ${i}/${totalPages}...`, 1);
+            
+            const page = await pdf.getPage(i);
+            const scale = 1.5; 
+            const viewport = page.getViewport({ scale });
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
 
-          await page.render({ canvasContext: ctx, viewport }).promise;
-          const { data: { text } } = await worker.recognize(canvas);
-          text.split('\n').forEach(line => {
-            const row = line.trim().split(/\s{2,}/);
-            if (row.length >= 3) ocrDataRows.push(['OCR', 'OCR', ...row]);
+            if (context) {
+              await page.render({ canvasContext: context as any, viewport: viewport } as any).promise;
+              updateProgress(25 + ((i - 0.3) / totalPages) * 15, `OCR: Escaneando pág ${i}/${totalPages}...`, 1);
+              
+              const { data: { text } } = await worker.recognize(canvas);
+              pageTexts[`pagina_${i}`] = text;
+              const lines = text.split('\n');
+              lines.forEach(line => {
+                const row = line.trim().split(/\s{2,}/);
+                if (row.length >= 3 && row[0].length > 1) {
+                  ocrDataRows.push(['OCR', 'OCR', ...row]);
+                }
+              });
+            }
+            canvas.width = 0;
+            canvas.height = 0;
+          }
+          await worker.terminate();
+        } catch (ocrError) {
+          console.error("OCR Failure:", ocrError);
+        }
+      }
+      
+      if (latestProcessRef.current !== pId) return;
+      setState(prev => ({ ...prev, rawPageTexts: pageTexts }));
+      // END FASE 1
+
+      // ===============================================
+      // FASE 2 – DETECCIÓN DE TABLAS
+      // ===============================================
+      updateProgress(40, "FASE 2: Identificando estructuras de tabla...", 2);
+      let rawDataRows: string[][] = ocrDataRows.length > 0 ? ocrDataRows : [];
+      let currentFamilia = 'N/A';
+      let currentClasificacion = 'N/A';
+      const ROW_TOLERANCE = 3;
+
+      if (ocrDataRows.length === 0) {
+        for (let i = 0; i < totalPages; i++) {
+          // CHANGE: Yield to prevent UI lock while parsing complex page structures
+          await new Promise(r => setTimeout(r, 0));
+          const textContent = pageData[i];
+          const rows: { y: number; items: any[] }[] = [];
+          
+          textContent.items.forEach((item: any) => {
+            if ('transform' in item) {
+              const y = item.transform[5];
+              let foundRow = rows.find(r => Math.abs(r.y - y) <= ROW_TOLERANCE);
+              if (!foundRow) foundRow = { y: y, items: [] }, rows.push(foundRow);
+              foundRow.items.push(item);
+            }
           });
 
-          canvas.width = 0;
-          canvas.height = 0;
+          rows.sort((a, b) => b.y - a.y).forEach(row => {
+            const items = row.items.sort((a, b) => a.transform[4] - b.transform[4]);
+            if (items.length === 0) return;
+
+            const fullLine = items.map(it => it.str).join(' ').trim();
+            const hasUnit = /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(fullLine) || items.some(it => /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(it.str.trim()));
+
+            // Category detection (Headers like "34 MALLAS CONSTRUCCION")
+            if (/^\d+\s+[A-Z\s]{4,}/.test(fullLine) && !hasUnit && items.length < 8) {
+               const cleaned = fullLine.replace(/User|Fecha|Hora/gi, '').trim();
+               if (cleaned.length > 5 && !/^\d{4,}/.test(cleaned)) { // Avoid article numbers being caught as categories
+                 if (currentFamilia === 'N/A') currentFamilia = cleaned;
+                 else currentClasificacion = cleaned;
+                 return;
+               }
+            }
+
+            // Entry detection - Looser Article ID detection to avoid missing rows
+            const firstToken = items[0].str.trim();
+            const isPotentialArticle = /^\d{2,12}$/.test(firstToken) || (items.length === 1 && /^\d{4,}\s+/.test(firstToken));
+            
+            if (isPotentialArticle && !fullLine.includes('Total General')) {
+              let rowData: string[] = [];
+              
+              if (items.length === 1 && firstToken.includes('  ')) {
+                rowData = firstToken.split(/\s{2,}/).filter(s => s.length > 0);
+              } else {
+                let currentCell = items[0].str;
+                let lastX = items[0].transform[4] + (items[0].width || 0);
+
+                for (let j = 1; j < items.length; j++) {
+                  const it = items[j];
+                  const gap = it.transform[4] - lastX;
+                  if (gap > (it.height || 8) * 0.35) { // Slightly tighter gap for columns
+                    rowData.push(currentCell.trim());
+                    currentCell = it.str;
+                  } else {
+                    currentCell += (currentCell.endsWith(' ') ? '' : ' ') + it.str;
+                  }
+                  lastX = it.transform[4] + (it.width || 0);
+                }
+                rowData.push(currentCell.trim());
+              }
+
+              if (rowData.length >= 3) {
+                // If it looks like a header (mostly text, few numbers), ignore unless it's a row
+                const numCount = rowData.filter(s => /[0-9]/.test(s)).length;
+                if (numCount >= 2 || rowData[0].length > 4) {
+                   rawDataRows.push([currentFamilia, currentClasificacion, ...rowData]);
+                }
+              }
+            }
+          });
+          updateProgress(40 + (i / totalPages) * 10, `Detectando tablas pág ${i+1}...`);
         }
-        await worker.terminate();
       }
+      // END FASE 2
 
-      // ✅ CAMBIO: aislar rawDataRows (NO usar referencia directa)
-      let rawDataRows: string[][] = [];
-      rawDataRows.push(...ocrDataRows.map(r => [...r]));
-
-      // ✅ CAMBIO: snapshot inmutable antes de mapear
-      const snapshotRows = rawDataRows.map(r => [...r]);
-
+      // ===============================================
+      // FASE 3 – MAPEO ESTRICTO DE COLUMNAS
+      // ===============================================
       updateProgress(60, "FASE 3: Aplicando mapeo estricto de columnas contables...", 3);
-
-      const mapped = snapshotRows.map(raw => {
+      const mapped = rawDataRows.map(raw => {
+        const fam = raw[0];
+        const clas = raw[1];
         const data = raw.slice(2);
-        const nums = data.map(cleanNumber).filter(n => n !== 0);
+        
+        const articulo = data[0] || '';
+        const descripcion = data[1] || '';
+        const unidad = data.find(c => /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(c.trim())) || 'UND';
+        const motivo = data.find(c => /^\d{2}$/.test(c.trim()) && c !== articulo) || '';
+        
+        // Improved Numeric Extraction:
+        // We look for numbers after the description/unit.
+        // Usually: Motivo, Fisico, Teorico, Costo, Dif, FisicoRD, TeoricoRD, DifRD
+        const allNumbers = data.slice(2)
+          .map(c => ({ original: c, value: cleanNumber(c), isUnit: /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(c.trim()) }))
+          .filter(obj => !obj.isUnit)
+          .map(obj => obj.value)
+          .filter((v, idx) => v !== 0 || /^[0]$/.test(data.slice(2)[idx]?.trim() || ""));
+
+        // Heuristic Mapping based on the Costo column (which usually has decimals or is large)
+        let fis = 0, teo = 0, cos = 0, dif = 0, fisRD = 0, teoRD = 0, ajRD = 0;
+        let motVal = motivo ? cleanNumber(motivo) : (allNumbers[0] || 0);
+        
+        // Remove the article number if it slipped into numeric extraction
+        const nums = allNumbers.filter(n => Math.abs(n - cleanNumber(articulo)) > 0.1 || n === 29 || n === 19);
+
+        if (nums.length >= 3) {
+          // Identify Costo by looking for decimals or significant magnitude compared to neighbors
+          // Costo usually appears at index 2 (if Fisico is blank) or index 3 (if Fisico is present)
+          const costoIdx = nums.findIndex((v, i) => i > 0 && (Math.abs(v % 1) > 0.001 || (v > 100 && i < 5)));
+          
+          if (costoIdx === 2) {
+            // Pattern: [Motivo/Idx0, Teorico/Idx1, Costo/Idx2, Dif/Idx3...]
+            // Fisico is implicitly 0/Blank
+            teo = nums[1];
+            cos = nums[2];
+            dif = nums[3] || 0;
+            fisRD = nums[4] || 0;
+            teoRD = nums[5] || 0;
+            ajRD = nums[6] || 0;
+          } else if (costoIdx >= 3) {
+            // Pattern: [Motivo/Idx0, Fisico/Idx1, Teorico/Idx2, Costo/Idx3, Dif/Idx4...]
+            fis = nums[1];
+            teo = nums[2];
+            cos = nums[3];
+            dif = nums[4] || 0;
+            fisRD = nums[5] || 0;
+            teoRD = nums[6] || 0;
+            ajRD = nums[7] || 0;
+          } else {
+            // Default sequential mapping as fallback
+            fis = nums[1] || 0;
+            teo = nums[2] || 0;
+            cos = nums[3] || 0;
+            dif = nums[4] || 0;
+            fisRD = nums[5] || 0;
+            teoRD = nums[6] || 0;
+            ajRD = nums[7] || 0;
+          }
+        }
 
         return {
-          articulo: data[0] || '',
-          descripcion: data[1] || '',
-          unidad: 'UND',
-          motivo: '',
-          fisico: nums[0] || 0,
-          teorico: nums[1] || 0,
-          costo_unitario: nums[2] || 0,
-          diferencia_unidades: (nums[0] || 0) - (nums[1] || 0),
-          fisico_rd: 0,
-          teorico_rd: 0,
-          ajuste_rd: ((nums[0] || 0) - (nums[1] || 0)) * (nums[2] || 0),
-          familia: 'N/A',
-          clasificacion: 'N/A'
+          articulo,
+          descripcion,
+          unidad,
+          motivo: motVal.toString(),
+          fisico: fis,
+          teorico: teo,
+          costo_unitario: cos,
+          diferencia_unidades: dif,
+          fisico_rd: fisRD,
+          teorico_rd: teoRD,
+          ajuste_rd: ajRD,
+          familia: fam,
+          clasificacion: clas
         };
-      }).filter(r => r.articulo);
+      });
+      // END FASE 3
 
-      if (signal.aborted) return;
+      // ===============================================
+      // FASE 4 – CÁLCULO CONTABLE
+      // ===============================================
+      updateProgress(80, "FASE 4: Verificación de cálculos y divergencias RD$...", 4);
+      const final = mapped.map(item => {
+        const calcDifUnidades = item.fisico - item.teorico;
+        const calcAjusteRD = calcDifUnidades * item.costo_unitario;
 
-      setInventoryData(mapped);
-      updateProgress(100, "FASE 6: Auditoría finalizada.", 6);
-      showToast("Auditoría completada exitosamente.", "success");
+        return {
+          ...item,
+          // Respect PDF values if not zero, else use calculated
+          diferencia_unidades: item.diferencia_unidades !== 0 ? item.diferencia_unidades : calcDifUnidades,
+          ajuste_rd: item.ajuste_rd !== 0 ? item.ajuste_rd : calcAjusteRD
+        };
+      }).filter(i => i.articulo.length > 2);
+      // END FASE 4
 
+      // ===============================================
+      // FASE 5 – CONFIABILIDAD DE INVENTARIO
+      // ===============================================
+      updateProgress(95, "FASE 5: Procesando índice de confiabilidad...", 5);
+      
+      if (final.length > 0) {
+        if (latestProcessRef.current === pId) {
+          setInventoryData(final);
+          updateProgress(100, "FASE 6: Auditoría finalizada.", 6);
+          showToast("Auditoría completada exitosamente.", "success");
+        }
+      } else {
+        throw new Error("No se pudo extraer una tabla de inventario válida.");
+      }
     } catch (err: any) {
-      if (!signal.aborted) {
+      if (latestProcessRef.current === pId) {
         console.error(err);
         showToast(err.message || "Error en proceso contable.", "error");
       }
     } finally {
-      // ✅ CAMBIO: limpieza real
-      if (abortRef.current?.signal === signal) abortRef.current = null;
-      if (pdf) {
-        try { pdf.destroy(); } catch {}
+      if (latestProcessRef.current === pId) {
+        setState(prev => ({ ...prev, isProcessing: false }));
       }
-      setState(prev => ({ ...prev, isProcessing: false }));
+      if (pdf) {
+        try { pdf.destroy(); } catch(e) {}
+      }
     }
   };
-
-  // TODO: resto del archivo (JSX / UI) permanece EXACTAMENTE IGUAL
-  
 
   const handleFile = (file: File) => {
     if (file.type !== 'application/pdf') {
