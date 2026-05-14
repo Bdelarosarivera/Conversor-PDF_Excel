@@ -1,4 +1,48 @@
-ring;
+import { useState, useRef, useCallback, DragEvent } from 'react';
+import { 
+  FileText, 
+  Download, 
+  RefreshCw, 
+  CheckCircle, 
+  AlertCircle, 
+  X,
+  Loader2,
+  Table as TableIcon,
+  Calculator,
+  ClipboardList,
+  FileSpreadsheet,
+  TrendingDown,
+  TrendingUp,
+  DollarSign
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import * as pdfjs from 'pdfjs-dist';
+import * as XLSX from 'xlsx';
+import { createWorker } from 'tesseract.js';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+// Initialize PDF.js with bundled worker
+pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+
+interface InventoryRow {
+  articulo: string; // codigo_articulo
+  descripcion: string;
+  unidad: string;
+  motivo: string;
+  fisico: number; // cantidad_fisica
+  teorico: number; // cantidad_teorica
+  costo_unitario: number;
+  diferencia_unidades: number;
+  fisico_rd: number; // valor_fisico
+  teorico_rd: number; // valor_teorico
+  ajuste_rd: number;
+  familia: string;
+  clasificacion: string;
+}
+
+interface FormularioAjuste {
+  fecha: string;
+  realizadoPor: string;
   areas: string;
   motivo: string;
   problemas: string;
