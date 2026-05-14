@@ -63,25 +63,20 @@ interface AppState extends ProcessState {
   processingId: number;
 }
 
-// ====================================================================================================================================================================================
-
 export default function App() {
+  const [state, setState] = useState<AppState>({
+    file: null,
+    inventoryData: [],
+    progress: 0,
+    message: '',
+    isProcessing: false,
+    phase: 0,
+    rawPageTexts: {},
+    processingId: 0
+  });
 
-  const [file, setFile] = useState<File | null>(null);
-  const [inventoryData, setInventoryData] = useState<InventoryRow[]>([]);
-
-  // ✅ CAMBIO
-  const latestProcessRef = useRef<number>(-1);
-
-  // ✅ CAMBIO
-  const abortRef = useRef<AbortController | null>(null);
-
-  // ✅ CAMBIO
-  const workerRef = useRef<any>(null);
-
-  // ✅ CAMBIO
-  const pdfRef = useRef<any>(null);
-
+  const latestProcessRef = useRef<number>(0);
+  
   const [formulario, setFormulario] = useState<FormularioAjuste>({
     fecha: new Date().toLocaleDateString(),
     realizadoPor: 'Generado por Sistema',
@@ -91,650 +86,235 @@ export default function App() {
     planAccion: 'Sincronización de stock'
   });
 
-  const [state, setState] = useState<ProcessState & { processingId: number }>({
-    progress: 0,
-    message: '',
-    isProcessing: false,
-    phase: 0,
-    rawPageTexts: {},
-    processingId: 0
-  });
-
-  const [toast, setToast] = useState<{
-    message: string;
-    type: 'success' | 'error' | 'info';
-  } | null>(null);
-
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
-  // ✅ CAMBIO
-  useEffect(() => {
-    return () => {
-
-      latestProcessRef.current = -1;
-
-      if (abortRef.current) {
-        abortRef.current.abort();
-      }
-
-      if (workerRef.current) {
-        try {
-          workerRef.current.terminate();
-        } catch (e) {}
-      }
-
-      if (pdfRef.current) {
-        try {
-          pdfRef.current.destroy();
-        } catch (e) {}
-      }
-    };
-  }, []);
-
-  const showToast = (
-    message: string,
-    type: 'success' | 'error' | 'info' = 'info'
-  ) => {
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 4000);
   };
 
-  // ✅ CAMBIO
-  const updateProgress = (
-    progress: number,
-    message: string,
-    phase?: number,
-    pId?: number,
-    signal?: AbortSignal
-  ) => {
-
-    if (pId && latestProcessRef.current !== pId) {
-      return;
-    }
-
-    if (signal?.aborted) {
-      return;
-    }
-
-    setState(prev => {
-
-      if (pId && prev.processingId !== pId) {
-        return prev;
-      }
-
-      return {
-        ...prev,
-        progress,
-        message,
-        phase: phase ?? prev.phase
-      };
-    });
+  const updateProgress = (progress: number, message: string, phase?: number) => {
+    setState(prev => ({ ...prev, progress, message, phase: phase ?? prev.phase }));
   };
 
   const cleanNumber = (val: string): number => {
     if (!val) return 0;
-
+    // Remove currency symbols, commas, and spaces. Handle negative symbols like "- 7" or "(7)"
     let cleaned = val.replace(/[RD$€£\s,]/g, '');
-
     if (cleaned.startsWith('(') && cleaned.endsWith(')')) {
       cleaned = '-' + cleaned.slice(1, -1);
     }
-
     const num = parseFloat(cleaned);
-
     return isNaN(num) ? 0 : num;
   };
 
-  // ✅ CAMBIO
   const processPDF = async (pdfFile: File) => {
-
-    // ✅ CAMBIO
-    latestProcessRef.current = -1;
-
-    // ✅ CAMBIO
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
-    }
-
-    // ✅ CAMBIO
-    if (workerRef.current) {
-      try {
-        await workerRef.current.terminate();
-      } catch (e) {}
-
-      workerRef.current = null;
-    }
-
-    // ✅ CAMBIO
-    if (pdfRef.current) {
-      try {
-        await pdfRef.current.destroy();
-      } catch (e) {}
-
-      pdfRef.current = null;
-    }
-
-    // ✅ CAMBIO
-    await new Promise(resolve => setTimeout(resolve, 150));
-
-    // ✅ CAMBIO
-    const controller = new AbortController();
-
-    // ✅ CAMBIO
-    abortRef.current = controller;
-
-    // ✅ CAMBIO
-    const signal = controller.signal;
-
-    // ✅ CAMBIO
-    const pId = Date.now() + Math.random();
-
-    // ✅ CAMBIO
+    // ✅ CAMBIO: Cancelación estricta de procesos previos e ID único fuerte
+    const pId = Date.now();
     latestProcessRef.current = pId;
-
-    console.log(`[AUDITOR] Iniciando proceso ID ${pId}`);
-
-    // ✅ CAMBIO
-    setInventoryData([]);
-
-    // ✅ CAMBIO
-    setFile(null);
-
-    // ✅ CAMBIO
-    setState({
-      progress: 0,
-      message: 'LIMPIANDO DATOS ANTERIORES...',
-      isProcessing: true,
+    
+    // ✅ CAMBIO: Reset ATÓMICO de todos los estados para evitar contaminación visual de procesos anteriores
+    setState({ 
+      file: null,
+      inventoryData: [],
+      isProcessing: true, 
+      progress: 0, 
+      message: 'PURGANDO CACHÉ Y DATOS ANTERIORES...',
       phase: 1,
-      rawPageTexts: {},
+      rawPageTexts: {}, 
       processingId: pId
     });
 
-    // ✅ CAMBIO
-    await new Promise(resolve => setTimeout(resolve, 50));
-
     let pdf: any = null;
-    let loadingTask: any = null;
+    let worker: any = null; 
 
     try {
+      // ✅ CAMBIO: Delay de seguridad para asegurar ciclos de pintado de React
+      await new Promise(r => setTimeout(r, 500));
+      if (latestProcessRef.current !== pId) return;
 
-      // ✅ CAMBIO
       const arrayBuffer = await pdfFile.arrayBuffer();
+      if (latestProcessRef.current !== pId) return;
 
-      // ✅ CAMBIO
-      if (
-        latestProcessRef.current !== pId ||
-        signal.aborted
-      ) {
-        return;
-      }
-
-      // ✅ CAMBIO
-      const isolatedBuffer = arrayBuffer.slice(0);
-
-      // ✅ CAMBIO
-      loadingTask = pdfjs.getDocument({
-        data: isolatedBuffer,
+      const loadingTask = pdfjs.getDocument({ 
+        data: arrayBuffer,
         cMapUrl: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/cmaps/`,
         cMapPacked: true,
       });
 
-      // ✅ CAMBIO
-      signal.addEventListener('abort', () => {
-        try {
-          loadingTask?.destroy?.();
-        } catch (e) {}
-      });
-
-      // ✅ CAMBIO
       pdf = await loadingTask.promise;
-
-      // ✅ CAMBIO
-      pdfRef.current = pdf;
-
-      // ✅ CAMBIO
-      if (
-        latestProcessRef.current !== pId ||
-        signal.aborted
-      ) {
-        try {
-          pdf.destroy();
-        } catch (e) {}
-
-        return;
-      }
-
+      if (latestProcessRef.current !== pId) return;
+      
       const totalPages = pdf.numPages;
-
-      setFile(pdfFile);
-
-      // ✅ CAMBIO
-      const pageTexts: Record<string, string> = structuredClone({});
-
-      // ✅ CAMBIO
+      // ✅ CAMBIO: Actualización de archivo local en estado consolidated
+      setState(prev => ({ ...prev, file: pdfFile }));
+      
+      // ===============================================
+      // FASE 1 – LECTURA Y OCR (OBLIGATORIA)
+      // ===============================================
+      // ✅ CAMBIO: Variables locales inmutables para esta ejecución específica
+      const pageTexts: Record<string, string> = {};
       const pageData: any[] = [];
-
       let totalTextItems = 0;
-
-      updateProgress(
-        10,
-        "FASE 1: Extrayendo texto crudo por página...",
-        1,
-        pId,
-        signal
-      );
-
+      
+      updateProgress(10, "FASE 1: Extrayendo texto crudo por página...", 1);
       for (let i = 1; i <= totalPages; i++) {
-
-        // ✅ CAMBIO
-        if (
-          latestProcessRef.current !== pId ||
-          signal.aborted
-        ) {
-          return;
-        }
-
+        // ✅ CAMBIO: Verificación de cancelación en cada iteración de alto consumo
+        if (latestProcessRef.current !== pId) return;
+        
         const page = await pdf.getPage(i);
-
         const textContent = await page.getTextContent();
-
-        // ✅ CAMBIO
-        const isolatedItems = structuredClone(textContent.items);
-
-        const rawText = isolatedItems
-          .map((it: any) => it.str)
-          .join(' ');
-
+        const rawText = textContent.items.map((it: any) => it.str).join(' ');
         pageTexts[`pagina_${i}`] = rawText;
-
-        pageData.push({
-          items: isolatedItems
-        });
-
-        totalTextItems += isolatedItems.length;
-
-        updateProgress(
-          10 + (i / totalPages) * 15,
-          `Leyendo texto pág ${i}/${totalPages}...`,
-          undefined,
-          pId,
-          signal
-        );
+        pageData.push(textContent);
+        totalTextItems += textContent.items.length;
+        updateProgress(10 + (i / totalPages) * 15, `Leyendo texto pág ${i}/${totalPages}...`);
       }
 
-      // ✅ CAMBIO
+      // Check for scanned PDF
       let ocrDataRows: string[][] = [];
-
-      if (totalTextItems < totalPages * 5) {
-
-        updateProgress(
-          25,
-          "Cargando motor OCR Tesseract...",
-          1,
-          pId,
-          signal
-        );
-
-        // ✅ CAMBIO
-        const worker = await createWorker('spa', 1);
-
-        // ✅ CAMBIO
-        workerRef.current = worker;
-
-        for (let i = 1; i <= totalPages; i++) {
-
-          // ✅ CAMBIO
-          if (
-            latestProcessRef.current !== pId ||
-            signal.aborted
-          ) {
-            break;
-          }
-
-          const page = await pdf.getPage(i);
-
-          const scale = 1.5;
-
-          const viewport = page.getViewport({ scale });
-
-          const canvas = document.createElement('canvas');
-
-          const context = canvas.getContext('2d');
-
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
-
-          if (context) {
-
-            await page.render({
-              canvasContext: context as any,
-              viewport
-            } as any).promise;
-
-            // ✅ CAMBIO
-            if (
-              latestProcessRef.current !== pId ||
-              signal.aborted
-            ) {
-              canvas.width = 0;
-              canvas.height = 0;
-              break;
-            }
-
-            const result = await worker.recognize(canvas);
-
-            // ✅ CAMBIO
-            if (
-              latestProcessRef.current !== pId ||
-              signal.aborted
-            ) {
-              canvas.width = 0;
-              canvas.height = 0;
-              break;
-            }
-
-            // ✅ CAMBIO
-            const text = structuredClone(result.data.text);
-
-            pageTexts[`pagina_${i}`] = text;
-
-            const lines = text.split('\n');
-
-            lines.forEach(line => {
-
-              const row = line
-                .trim()
-                .split(/\s{2,}/);
-
-              if (
-                row.length >= 3 &&
-                row[0].length > 1
-              ) {
-
-                // ✅ CAMBIO
-                ocrDataRows.push(
-                  structuredClone([
-                    'OCR',
-                    'OCR',
-                    ...row
-                  ])
-                );
-              }
-            });
-          }
-
-          canvas.width = 0;
-          canvas.height = 0;
-        }
-
-        // ✅ CAMBIO
+      if (totalTextItems < totalPages * 5) { 
+        updateProgress(25, "Iniciando motor OCR de alta precisión...", 1);
+        
         try {
-          await worker.terminate();
-        } catch (e) {}
+          worker = await createWorker('spa', 1);
+          for (let i = 1; i <= totalPages; i++) {
+            // ✅ CAMBIO: Check de cancelación antes de iniciar OCR en página
+            if (latestProcessRef.current !== pId) break;
+            
+            updateProgress(25 + ((i - 0.7) / totalPages) * 15, `Preparando análisis OCR pág ${i}/${totalPages}...`, 1);
+            
+            const page = await pdf.getPage(i);
+            const scale = 1.5; 
+            const viewport = page.getViewport({ scale });
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
 
-        // ✅ CAMBIO
-        workerRef.current = null;
-      }
+            if (context) {
+              await page.render({ canvasContext: context as any, viewport: viewport } as any).promise;
+              // ✅ CAMBIO: Check tras renderizado síncrono
+              if (latestProcessRef.current !== pId) break;
 
-      // ✅ CAMBIO
-      if (
-        latestProcessRef.current !== pId ||
-        signal.aborted
-      ) {
-        return;
-      }
-
-      setState(prev => {
-
-        if (prev.processingId !== pId) {
-          return prev;
-        }
-
-        return {
-          ...prev,
-          rawPageTexts: structuredClone(pageTexts)
-        };
-      });
-
-      // ✅ CAMBIO
-      let rawDataRows: string[][] = structuredClone(
-        ocrDataRows.length > 0
-          ? ocrDataRows
-          : []
-      );
-
-      // =========================
-      // TU LÓGICA ORIGINAL SIGUE
-      // =========================
-
-      // ✅ CAMBIO
-      const isolatedRows = structuredClone(rawDataRows);
-
-      const mapped = isolatedRows.map(raw => {
-
-       // ===============================================
-// FASE 2 – DETECCIÓN DE TABLAS
-// ===============================================
-
-updateProgress(
-  40,
-  "FASE 2: Identificando estructuras de tabla...",
-  2,
-  pId,
-  signal
-);
-
-// ✅ CAMBIO
-let rawDataRows: string[][] = structuredClone(
-  ocrDataRows.length > 0
-    ? ocrDataRows
-    : []
-);
-
-let currentFamilia = 'N/A';
-let currentClasificacion = 'N/A';
-
-const ROW_TOLERANCE = 3;
-
-if (ocrDataRows.length === 0) {
-
-  for (let i = 0; i < totalPages; i++) {
-
-    // ✅ CAMBIO
-    if (
-      latestProcessRef.current !== pId ||
-      signal.aborted
-    ) {
-      return;
-    }
-
-    await new Promise(r => setTimeout(r, 0));
-
-    const textContent = pageData[i];
-
-    const rows: {
-      y: number;
-      items: any[];
-    }[] = [];
-
-    textContent.items.forEach((item: any) => {
-
-      if ('transform' in item) {
-
-        const y = item.transform[5];
-
-        let foundRow = rows.find(
-          r => Math.abs(r.y - y) <= ROW_TOLERANCE
-        );
-
-        if (!foundRow) {
-
-          foundRow = {
-            y,
-            items: []
-          };
-
-          rows.push(foundRow);
-        }
-
-        foundRow.items.push(
-          structuredClone(item)
-        );
-      }
-    });
-
-    rows
-      .sort((a, b) => b.y - a.y)
-      .forEach(row => {
-
-        const items = row.items.sort(
-          (a, b) => a.transform[4] - b.transform[4]
-        );
-
-        if (items.length === 0) return;
-
-        const fullLine = items
-          .map(it => it.str)
-          .join(' ')
-          .trim();
-
-        const hasUnit =
-          /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(fullLine) ||
-          items.some(it =>
-            /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(
-              it.str.trim()
-            )
-          );
-
-        if (
-          /^\d+\s+[A-Z\s]{4,}/.test(fullLine) &&
-          !hasUnit &&
-          items.length < 8
-        ) {
-
-          const cleaned = fullLine
-            .replace(/User|Fecha|Hora/gi, '')
-            .trim();
-
-          if (
-            cleaned.length > 5 &&
-            !/^\d{4,}/.test(cleaned)
-          ) {
-
-            if (currentFamilia === 'N/A') {
-              currentFamilia = cleaned;
-            } else {
-              currentClasificacion = cleaned;
+              updateProgress(25 + ((i - 0.3) / totalPages) * 15, `Escaneando caracteres pág ${i}/${totalPages}...`, 1);
+              
+              const { data: { text } } = await worker.recognize(canvas);
+              pageTexts[`pagina_${i}`] = text;
+              const lines = text.split('\n');
+              lines.forEach(line => {
+                const row = line.trim().split(/\s{2,}/);
+                if (row.length >= 3 && row[0].length > 1) {
+                  ocrDataRows.push(['OCR', 'OCR', ...row]);
+                }
+              });
             }
-
-            return;
+            canvas.width = 0;
+            canvas.height = 0;
+          }
+        } catch (ocrError) {
+          console.error("OCR Failure:", ocrError);
+        } finally {
+          // ✅ CAMBIO: Asegurar cierre del worker específico de esta ejecución
+          if (worker) {
+            await worker.terminate();
+            worker = null;
           }
         }
+      }
+      
+      if (latestProcessRef.current !== pId) return;
+      // ✅ CAMBIO: Clonado profundo del snapshot de textos para evitar referencias compartidas
+      setState(prev => ({ ...prev, rawPageTexts: JSON.parse(JSON.stringify(pageTexts)) }));
+      // END FASE 1
 
-        const firstToken = items[0].str.trim();
+      // ===============================================
+      // FASE 2 – DETECCIÓN DE TABLAS
+      // ===============================================
+      updateProgress(40, "FASE 2: Identificando estructuras de tabla...", 2);
+      // ✅ CAMBIO: Nueva referencia local para evitar contaminación de arrays previos
+      let rawDataRows: string[][] = ocrDataRows.length > 0 ? [...ocrDataRows] : [];
+      let currentFamilia = 'N/A';
+      let currentClasificacion = 'N/A';
+      const ROW_TOLERANCE = 3;
 
-        const isPotentialArticle =
-          /^\d{2,12}$/.test(firstToken) ||
-          (
-            items.length === 1 &&
-            /^\d{4,}\s+/.test(firstToken)
-          );
+      if (ocrDataRows.length === 0) {
+        for (let i = 0; i < totalPages; i++) {
+          if (latestProcessRef.current !== pId) return;
+          
+          // ✅ CAMBIO: Retardo intencional controlado para no bloquear el hilo de UI
+          await new Promise(r => setTimeout(r, 10));
+          const textContent = pageData[i];
+          const rows: { y: number; items: any[] }[] = [];
+          
+          textContent.items.forEach((item: any) => {
+            if ('transform' in item) {
+              const y = item.transform[5];
+              let foundRow = rows.find(r => Math.abs(r.y - y) <= ROW_TOLERANCE);
+              if (!foundRow) foundRow = { y: y, items: [] }, rows.push(foundRow);
+              foundRow.items.push(item);
+            }
+          });
 
-        if (
-          isPotentialArticle &&
-          !fullLine.includes('Total General')
-        ) {
+          rows.sort((a, b) => b.y - a.y).forEach(row => {
+            const items = row.items.sort((a, b) => a.transform[4] - b.transform[4]);
+            if (items.length === 0) return;
 
-          let rowData: string[] = [];
+            const fullLine = items.map(it => it.str).join(' ').trim();
+            const hasUnit = /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(fullLine) || items.some(it => /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(it.str.trim()));
 
-          if (
-            items.length === 1 &&
-            firstToken.includes('  ')
-          ) {
+            if (/^\d+\s+[A-Z\s]{4,}/.test(fullLine) && !hasUnit && items.length < 8) {
+               const cleaned = fullLine.replace(/User|Fecha|Hora/gi, '').trim();
+               if (cleaned.length > 5 && !/^\d{4,}/.test(cleaned)) { 
+                 if (currentFamilia === 'N/A') currentFamilia = cleaned;
+                 else currentClasificacion = cleaned;
+                 return;
+               }
+            }
 
-            rowData = firstToken
-              .split(/\s{2,}/)
-              .filter(s => s.length > 0);
-
-          } else {
-
-            let currentCell = items[0].str;
-
-            let lastX =
-              items[0].transform[4] +
-              (items[0].width || 0);
-
-            for (let j = 1; j < items.length; j++) {
-
-              const it = items[j];
-
-              const gap =
-                it.transform[4] - lastX;
-
-              if (
-                gap > (it.height || 8) * 0.35
-              ) {
-
-                rowData.push(
-                  currentCell.trim()
-                );
-
-                currentCell = it.str;
-
+            const firstToken = items[0].str.trim();
+            const isPotentialArticle = /^\d{2,12}$/.test(firstToken) || (items.length === 1 && /^\d{4,}\s+/.test(firstToken));
+            
+            if (isPotentialArticle && !fullLine.includes('Total General')) {
+              let rowData: string[] = [];
+              
+              if (items.length === 1 && firstToken.includes('  ')) {
+                rowData = firstToken.split(/\s{2,}/).filter(s => s.length > 0);
               } else {
+                let currentCell = items[0].str;
+                let lastX = items[0].transform[4] + (items[0].width || 0);
 
-                currentCell +=
-                  (currentCell.endsWith(' ')
-                    ? ''
-                    : ' ') + it.str;
+                for (let j = 1; j < items.length; j++) {
+                  const it = items[j];
+                  const gap = it.transform[4] - lastX;
+                  if (gap > (it.height || 8) * 0.35) { 
+                    rowData.push(currentCell.trim());
+                    currentCell = it.str;
+                  } else {
+                    currentCell += (currentCell.endsWith(' ') ? '' : ' ') + it.str;
+                  }
+                  lastX = it.transform[4] + (it.width || 0);
+                }
+                rowData.push(currentCell.trim());
               }
 
-              lastX =
-                it.transform[4] +
-                (it.width || 0);
+              if (rowData.length >= 3) {
+                const numCount = rowData.filter(s => /[0-9]/.test(s)).length;
+                if (numCount >= 2 || rowData[0].length > 4) {
+                   rawDataRows.push([`${currentFamilia}`, `${currentClasificacion}`, ...rowData.map(s => `${s}`)]);
+                }
+              }
             }
-
-            rowData.push(
-              currentCell.trim()
-            );
-          }
-
-          if (rowData.length >= 3) {
-
-            const numCount = rowData.filter(
-              s => /[0-9]/.test(s)
-            ).length;
-
-            if (
-              numCount >= 2 ||
-              rowData[0].length > 4
-            ) {
-
-              rawDataRows.push(
-                structuredClone([
-                  currentFamilia,
-                  currentClasificacion,
-                  ...rowData
-                ])
-              );
-            }
-          }
+          });
+          updateProgress(40 + (i / totalPages) * 10, `Detectando tablas pág ${i+1}...`);
         }
-      });
+      }
+      // END FASE 2
 
-    updateProgress(
-      40 + (i / totalPages) * 10,
-      `Detectando tablas pág ${i + 1}...`,
-      undefined,
-      pId,
-      signal
-    );
-  }
-}
-
-// ===============================================
+      // ===============================================
       // FASE 3 – MAPEO ESTRICTO DE COLUMNAS
       // ===============================================
       if (latestProcessRef.current !== pId) return;
