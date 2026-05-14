@@ -441,15 +441,12 @@ export default function App() {
         showToast(err.message || "Error en proceso contable.", "error");
       }
     } finally {
-
-      
-   
- // ✅ CAMBIO: limpieza real
-      if (abortRef.current?.signal === signal) abortRef.current = null;
-      if (pdf) {
-        try { pdf.destroy(); } catch {}
+      if (latestProcessRef.current === pId) {
+        setState(prev => ({ ...prev, isProcessing: false }));
       }
-      setState(prev => ({ ...prev, isProcessing: false }));
+      if (pdf) {
+        try { pdf.destroy(); } catch(e) {}
+      }
     }
   };
 
