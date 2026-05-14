@@ -21,20 +21,19 @@ import * as XLSX from 'xlsx';
 import { createWorker } from 'tesseract.js';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-// Initialize PDF.js with bundled worker
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 interface InventoryRow {
-  articulo: string; // codigo_articulo
+  articulo: string;
   descripcion: string;
   unidad: string;
   motivo: string;
-  fisico: number; // cantidad_fisica
-  teorico: number; // cantidad_teorica
+  fisico: number;
+  teorico: number;
   costo_unitario: number;
   diferencia_unidades: number;
-  fisico_rd: number; // valor_fisico
-  teorico_rd: number; // valor_teorico
+  fisico_rd: number;
+  teorico_rd: number;
   ajuste_rd: number;
   familia: string;
   clasificacion: string;
@@ -75,8 +74,8 @@ export default function App() {
     processingId: 0
   });
 
-  const latestProcessRef = useRef<number>(0);
-  const abortControllerRef = useRef<AbortController | null>(null); // ✅ CAMBIO: Referencia para control de cancelación global
+  // ✅ CAMBIO: AbortController ref reemplaza latestProcessRef para cancelación real
+  const abortControllerRef = useRef<AbortController | null>(null);
   
   const [formulario, setFormulario] = useState<FormularioAjuste>({
     fecha: new Date().toLocaleDateString(),
@@ -97,15 +96,12 @@ export default function App() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  const updateProgress = (progress: number, message: string, pId: number, phase?: number) => {
-    // ✅ CAMBIO: Validación de ID antes de actualizar progreso para evitar que procesos viejos hablen
-    if (latestProcessRef.current !== pId) return;
+  const updateProgress = (progress: number, message: string, phase?: number) => {
     setState(prev => ({ ...prev, progress, message, phase: phase ?? prev.phase }));
   };
 
   const cleanNumber = (val: string): number => {
     if (!val) return 0;
-    // Remove currency symbols, commas, and spaces. Handle negative symbols like "- 7" or "(7)"
     let cleaned = val.replace(/[RD$€£\s,]/g, '');
     if (cleaned.startsWith('(') && cleaned.endsWith(')')) {
       cleaned = '-' + cleaned.slice(1, -1);
@@ -115,24 +111,25 @@ export default function App() {
   };
 
   const processPDF = async (pdfFile: File) => {
-    // ✅ CAMBIO: Cancelación estricta de procesos previos mediante AbortController
+    // ✅ CAMBIO: Abortar proceso anterior de forma real antes de comenzar
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
+
+    // ✅ CAMBIO: Nuevo AbortController exclusivo para esta ejecución
     const controller = new AbortController();
-    abortControllerRef.current = controller;
     const signal = controller.signal;
+    abortControllerRef.current = controller;
 
     const pId = Date.now();
-    latestProcessRef.current = pId;
-    
-    // ✅ CAMBIO: Reset ATÓMICO e inmutable del estado
+
+    // ✅ CAMBIO: Reset atómico completo — ninguna referencia al estado anterior sobrevive
     setState({ 
       file: null,
       inventoryData: [],
       isProcessing: true, 
       progress: 0, 
-      message: 'PURGANDO HILOS Y DATOS...',
+      message: 'PURGANDO CACHÉ Y DATOS ANTERIORES...',
       phase: 1,
       rawPageTexts: {}, 
       processingId: pId
@@ -142,12 +139,12 @@ export default function App() {
     let worker: any = null; 
 
     try {
-      // ✅ CAMBIO: Validación de señal en punto de entrada
-      await new Promise(r => setTimeout(r, 600));
-      if (signal.aborted || latestProcessRef.current !== pId) return;
+      await new Promise(r => setTimeout(r, 500));
+      // ✅ CAMBIO: Validar signal.aborted en todos los puntos de suspensión
+      if (signal.aborted) return;
 
       const arrayBuffer = await pdfFile.arrayBuffer();
-      if (signal.aborted || latestProcessRef.current !== pId) return;
+      if (signal.aborted) return;
 
       const loadingTask = pdfjs.getDocument({ 
         data: arrayBuffer,
@@ -156,44 +153,47 @@ export default function App() {
       });
 
       pdf = await loadingTask.promise;
-      if (signal.aborted || latestProcessRef.current !== pId) return;
+      if (signal.aborted) return;
       
       const totalPages = pdf.numPages;
-      // ✅ CAMBIO: Mantenimiento de integridad de ID durante actualización parcial
-      setState(prev => prev.processingId === pId ? { ...prev, file: pdfFile } : prev);
+      setState(prev => ({ ...prev, file: pdfFile }));
       
       // ===============================================
-      // FASE 1 – LECTURA Y OCR (OBLIGATORIA)
+      // FASE 1 – LECTURA Y OCR
       // ===============================================
+      // ✅ CAMBIO: Arrays locales nuevos por ejecución — sin referencias compartidas
       const pageTexts: Record<string, string> = {};
+      // ✅ CAMBIO: pageData clonado como array nuevo aislado de esta ejecución
       const pageData: any[] = [];
       let totalTextItems = 0;
       
-      updateProgress(10, "FASE 1: Extrayendo texto crudo por página...", pId, 1);
+      updateProgress(10, "FASE 1: Extrayendo texto crudo por página...", 1);
       for (let i = 1; i <= totalPages; i++) {
-        // ✅ CAMBIO: Validación de cancelación en loop de IO
-        if (signal.aborted || latestProcessRef.current !== pId) return;
+        // ✅ CAMBIO: signal.aborted verificado en cada iteración crítica
+        if (signal.aborted) return;
         
         const page = await pdf.getPage(i);
         const textContent = await page.getTextContent();
         const rawText = textContent.items.map((it: any) => it.str).join(' ');
         pageTexts[`pagina_${i}`] = rawText;
-        pageData.push(textContent);
+        // ✅ CAMBIO: Clonar deep el textContent antes de acumular para evitar referencias vivas
+        pageData.push(JSON.parse(JSON.stringify(textContent)));
         totalTextItems += textContent.items.length;
-        updateProgress(10 + (i / totalPages) * 15, `Leyendo texto pág ${i}/${totalPages}...`, pId);
+        updateProgress(10 + (i / totalPages) * 15, `Leyendo texto pág ${i}/${totalPages}...`);
       }
 
+      // ✅ CAMBIO: Array OCR nuevo e inmutable para esta ejecución
       let ocrDataRows: string[][] = [];
       if (totalTextItems < totalPages * 5) { 
-        updateProgress(25, "Iniciando motor OCR de aislamiento total...", pId, 1);
+        updateProgress(25, "Iniciando motor OCR de alta precisión...", 1);
         
         try {
           worker = await createWorker('spa', 1);
           for (let i = 1; i <= totalPages; i++) {
-            // ✅ CAMBIO: Abortar OCR si el proceso ya no es el actual
-            if (signal.aborted || latestProcessRef.current !== pId) break;
+            // ✅ CAMBIO: signal.aborted verificado antes de cada página OCR
+            if (signal.aborted) break;
             
-            updateProgress(25 + ((i - 0.7) / totalPages) * 15, `Preparando OCR pág ${i}/${totalPages}...`, pId, 1);
+            updateProgress(25 + ((i - 0.7) / totalPages) * 15, `Preparando análisis OCR pág ${i}/${totalPages}...`, 1);
             
             const page = await pdf.getPage(i);
             const scale = 1.5; 
@@ -205,17 +205,31 @@ export default function App() {
 
             if (context) {
               await page.render({ canvasContext: context as any, viewport: viewport } as any).promise;
-              if (signal.aborted || latestProcessRef.current !== pId) break;
+              // ✅ CAMBIO: signal.aborted verificado tras renderizado del canvas
+              if (signal.aborted) {
+                canvas.width = 0;
+                canvas.height = 0;
+                break;
+              }
 
-              updateProgress(25 + ((i - 0.3) / totalPages) * 15, `Escaneando pág ${i}/${totalPages}...`, pId, 1);
+              updateProgress(25 + ((i - 0.3) / totalPages) * 15, `Escaneando caracteres pág ${i}/${totalPages}...`, 1);
               
               const { data: { text } } = await worker.recognize(canvas);
+              
+              // ✅ CAMBIO: signal.aborted verificado tras OCR asíncrono antes de escribir
+              if (signal.aborted) {
+                canvas.width = 0;
+                canvas.height = 0;
+                break;
+              }
+
               pageTexts[`pagina_${i}`] = text;
               const lines = text.split('\n');
               lines.forEach(line => {
                 const row = line.trim().split(/\s{2,}/);
                 if (row.length >= 3 && row[0].length > 1) {
-                  ocrDataRows.push(['OCR', 'OCR', ...row]);
+                  // ✅ CAMBIO: Push con spread para evitar referencia directa al array de split
+                  ocrDataRows.push(['OCR', 'OCR', ...row.map(s => String(s))]);
                 }
               });
             }
@@ -225,6 +239,7 @@ export default function App() {
         } catch (ocrError) {
           console.error("OCR Failure:", ocrError);
         } finally {
+          // ✅ CAMBIO: Terminar worker siempre, independientemente de cancelación
           if (worker) {
             await worker.terminate();
             worker = null;
@@ -232,25 +247,33 @@ export default function App() {
         }
       }
       
-      if (signal.aborted || latestProcessRef.current !== pId) return;
-      // ✅ CAMBIO: Clonado profundo inmutable de los resultados de OCR/Lectura
-      setState(prev => prev.processingId === pId ? { ...prev, rawPageTexts: JSON.parse(JSON.stringify(pageTexts)) } : prev);
+      // ✅ CAMBIO: Verificar signal antes de escribir estado con textos extraídos
+      if (signal.aborted) return;
+
+      // ✅ CAMBIO: Snapshot inmutable del mapa de textos — clonado profundo
+      setState(prev => ({ ...prev, rawPageTexts: JSON.parse(JSON.stringify(pageTexts)) }));
 
       // ===============================================
       // FASE 2 – DETECCIÓN DE TABLAS
       // ===============================================
-      updateProgress(40, "FASE 2: Identificando estructuras de tabla...", pId, 2);
-      // ✅ CAMBIO: Aislamiento total del array de filas detectadas
-      let rawDataRows: string[][] = ocrDataRows.length > 0 ? JSON.parse(JSON.stringify(ocrDataRows)) : [];
+      updateProgress(40, "FASE 2: Identificando estructuras de tabla...", 2);
+
+      // ✅ CAMBIO: rawDataRows es un array nuevo creado a partir de copia superficial de ocrDataRows
+      let rawDataRows: string[][] = ocrDataRows.length > 0
+        ? ocrDataRows.map(row => [...row])  // ✅ CAMBIO: clonar cada fila para evitar referencia compartida
+        : [];
+
       let currentFamilia = 'N/A';
       let currentClasificacion = 'N/A';
       const ROW_TOLERANCE = 3;
 
       if (ocrDataRows.length === 0) {
         for (let i = 0; i < totalPages; i++) {
-          if (signal.aborted || latestProcessRef.current !== pId) return;
+          // ✅ CAMBIO: signal.aborted verificado en cada página de fase 2
+          if (signal.aborted) return;
           
-          await new Promise(r => setTimeout(r, 15));
+          await new Promise(r => setTimeout(r, 10));
+          // ✅ CAMBIO: pageData[i] es ya un clon deep — acceso seguro sin mutar el original
           const textContent = pageData[i];
           const rows: { y: number; items: any[] }[] = [];
           
@@ -308,22 +331,30 @@ export default function App() {
               if (rowData.length >= 3) {
                 const numCount = rowData.filter(s => /[0-9]/.test(s)).length;
                 if (numCount >= 2 || rowData[0].length > 4) {
-                   rawDataRows.push([`${currentFamilia}`, `${currentClasificacion}`, ...rowData.map(s => `${s}`)]);
+                  // ✅ CAMBIO: Push con copia explícita de cada celda como string primitivo
+                  rawDataRows.push([
+                    String(currentFamilia),
+                    String(currentClasificacion),
+                    ...rowData.map(s => String(s))
+                  ]);
                 }
               }
             }
           });
-          updateProgress(40 + (i / totalPages) * 10, `Procesando tabla pág ${i+1}...`, pId);
+          updateProgress(40 + (i / totalPages) * 10, `Detectando tablas pág ${i+1}...`);
         }
       }
 
       // ===============================================
       // FASE 3 – MAPEO ESTRICTO DE COLUMNAS
       // ===============================================
-      if (signal.aborted || latestProcessRef.current !== pId) return;
-      updateProgress(60, "FASE 3: Aplicando mapeo estricto de columnas contables...", pId, 3);
-      
-      const mapped = rawDataRows.map(raw => {
+      if (signal.aborted) return;
+      updateProgress(60, "FASE 3: Aplicando mapeo estricto de columnas contables...", 3);
+
+      // ✅ CAMBIO: Snapshot inmutable de rawDataRows antes del mapeo — sin referencia al array original
+      const rawDataSnapshot: string[][] = rawDataRows.map(row => [...row]);
+
+      const mapped = rawDataSnapshot.map(raw => {
         const fam = raw[0];
         const clas = raw[1];
         const data = raw.slice(2);
@@ -362,14 +393,14 @@ export default function App() {
         return {
           articulo, descripcion, unidad, motivo: motVal.toString(),
           fisico: fis, teorico: teo, costo_unitario: cos,
-          diferencia_unidades: dif, fisico_rd: fisRD, teo_rd: teoRD, ajuste_rd: ajRD,
+          diferencia_unidades: dif, fisico_rd: fisRD, teorico_rd: teoRD, ajuste_rd: ajRD,
           familia: fam, clasificacion: clas
         };
       });
 
       // FASE 4 - CÁLCULO
-      if (signal.aborted || latestProcessRef.current !== pId) return;
-      updateProgress(80, "FASE 4: Verificación de cálculos y divergencias RD$...", pId, 4);
+      if (signal.aborted) return;
+      updateProgress(80, "FASE 4: Verificación de cálculos y divergencias RD$...", 4);
       const final = mapped.map(item => {
         const calcDifUnidades = item.fisico - item.teorico;
         const calcAjusteRD = calcDifUnidades * item.costo_unitario;
@@ -381,39 +412,36 @@ export default function App() {
       }).filter(i => i.articulo.length > 2);
 
       // FASE 5
-      if (signal.aborted || latestProcessRef.current !== pId) return;
-      updateProgress(95, "FASE 5: Procesando índice de confiabilidad...", pId, 5);
+      if (signal.aborted) return;
+      updateProgress(95, "FASE 5: Procesando índice de confiabilidad...", 5);
       
       if (final.length > 0) {
-        if (!signal.aborted && latestProcessRef.current === pId) {
-          // ✅ CAMBIO: Clausura estricta para el commit final de datos
-          setState(prev => prev.processingId === pId ? { 
-            ...prev, 
-            inventoryData: JSON.parse(JSON.stringify(final)), 
-            isProcessing: false,
-            progress: 100,
-            message: "FASE 6: Auditoría finalizada.",
-            phase: 6
-          } : prev);
+        // ✅ CAMBIO: Verificar signal antes del setState final — el proceso más crítico
+        if (!signal.aborted) {
+          // ✅ CAMBIO: Spread crea nueva referencia del array final — aislado del array mapped
+          setState(prev => ({ ...prev, inventoryData: [...final] }));
+          updateProgress(100, "FASE 6: Auditoría finalizada.", 6);
           showToast("Auditoría completada exitosamente.", "success");
         }
       } else {
         throw new Error("No se pudo extraer una tabla de inventario válida.");
       }
     } catch (err: any) {
-      if (!signal.aborted && latestProcessRef.current === pId) {
+      // ✅ CAMBIO: Solo mostrar error si no fue cancelación intencional
+      if (!signal.aborted) {
         console.error(err);
         showToast(err.message || "Error en proceso contable.", "error");
-        setState(prev => ({ ...prev, isProcessing: false }));
       }
     } finally {
-      // ✅ CAMBIO: Limpieza final de recursos y reset de controller si es el activo
-      if (latestProcessRef.current === pId) {
-        abortControllerRef.current = null;
+      // ✅ CAMBIO: Solo limpiar isProcessing si este proceso sigue siendo el activo
+      if (!signal.aborted) {
+        setState(prev => ({ ...prev, isProcessing: false }));
       }
+      // ✅ CAMBIO: Destruir PDF siempre para liberar memoria, independiente de cancelación
       if (pdf) {
         try { pdf.destroy(); } catch(e) {}
       }
+      // ✅ CAMBIO: Terminar worker si quedó activo por un error inesperado
       if (worker) {
         try { worker.terminate(); } catch(e) {}
       }
@@ -426,10 +454,8 @@ export default function App() {
       return;
     }
     
-    // Clear input to allow re-uploading same file / help memory
     if (fileInputRef.current) fileInputRef.current.value = '';
     
-    // We don't call setFile(file) here because processPDF handles it
     processPDF(file);
   };
 
@@ -438,9 +464,6 @@ export default function App() {
     try {
       const wb = XLSX.utils.book_new();
 
-      // ==============================
-      // HOJA 1: Ajuste_Contable
-      // ==============================
       const ajusteData = state.inventoryData.map(item => ({
         'Articulo': item.articulo,
         'Descripcion': item.descripcion,
@@ -455,9 +478,6 @@ export default function App() {
       const ws1 = XLSX.utils.json_to_sheet(ajusteData);
       XLSX.utils.book_append_sheet(wb, ws1, "Ajuste_Contable");
 
-      // ==============================
-      // HOJA 2: Resumen_Contable
-      // ==============================
       const totalFisico = state.inventoryData.reduce((acc, i) => acc + i.fisico, 0);
       const totalTeorico = state.inventoryData.reduce((acc, i) => acc + i.teorico, 0);
       const totalAjusteRD = state.inventoryData.reduce((acc, i) => acc + i.ajuste_rd, 0);
@@ -477,9 +497,6 @@ export default function App() {
       const ws2 = XLSX.utils.aoa_to_sheet(resumenRows);
       XLSX.utils.book_append_sheet(wb, ws2, "Resumen_Contable");
 
-      // ==============================
-      // HOJA 3: Confiabilidad_Inventario
-      // ==============================
       const sumaAbsDif = state.inventoryData.reduce((acc, i) => acc + Math.abs(i.fisico - i.teorico), 0);
       const sumaTeorico = state.inventoryData.reduce((acc, i) => acc + i.teorico, 0);
       const confiabilidad = sumaTeorico > 0 ? (1 - (sumaAbsDif / sumaTeorico)) * 100 : 100;
