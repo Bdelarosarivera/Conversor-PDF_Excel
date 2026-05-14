@@ -514,206 +514,337 @@ export default function App() {
 
       const mapped = isolatedRows.map(raw => {
 
+       // ===============================================
+// FASE 2 – DETECCIÓN DE TABLAS
+// ===============================================
+
+updateProgress(
+  40,
+  "FASE 2: Identificando estructuras de tabla...",
+  2,
+  pId,
+  signal
+);
+
+// ✅ CAMBIO
+let rawDataRows: string[][] = structuredClone(
+  ocrDataRows.length > 0
+    ? ocrDataRows
+    : []
+);
+
+let currentFamilia = 'N/A';
+let currentClasificacion = 'N/A';
+
+const ROW_TOLERANCE = 3;
+
+if (ocrDataRows.length === 0) {
+
+  for (let i = 0; i < totalPages; i++) {
+
+    // ✅ CAMBIO
+    if (
+      latestProcessRef.current !== pId ||
+      signal.aborted
+    ) {
+      return;
+    }
+
+    await new Promise(r => setTimeout(r, 0));
+
+    const textContent = pageData[i];
+
+    const rows: {
+      y: number;
+      items: any[];
+    }[] = [];
+
+    textContent.items.forEach((item: any) => {
+
+      if ('transform' in item) {
+
+        const y = item.transform[5];
+
+        let foundRow = rows.find(
+          r => Math.abs(r.y - y) <= ROW_TOLERANCE
+        );
+
+        if (!foundRow) {
+
+          foundRow = {
+            y,
+            items: []
+          };
+
+          rows.push(foundRow);
+        }
+
+        foundRow.items.push(
+          structuredClone(item)
+        );
+      }
+    });
+
+    rows
+      .sort((a, b) => b.y - a.y)
+      .forEach(row => {
+
+        const items = row.items.sort(
+          (a, b) => a.transform[4] - b.transform[4]
+        );
+
+        if (items.length === 0) return;
+
+        const fullLine = items
+          .map(it => it.str)
+          .join(' ')
+          .trim();
+
+        const hasUnit =
+          /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(fullLine) ||
+          items.some(it =>
+            /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(
+              it.str.trim()
+            )
+          );
+
+        if (
+          /^\d+\s+[A-Z\s]{4,}/.test(fullLine) &&
+          !hasUnit &&
+          items.length < 8
+        ) {
+
+          const cleaned = fullLine
+            .replace(/User|Fecha|Hora/gi, '')
+            .trim();
+
+          if (
+            cleaned.length > 5 &&
+            !/^\d{4,}/.test(cleaned)
+          ) {
+
+            if (currentFamilia === 'N/A') {
+              currentFamilia = cleaned;
+            } else {
+              currentClasificacion = cleaned;
+            }
+
+            return;
+          }
+        }
+
+        const firstToken = items[0].str.trim();
+
+        const isPotentialArticle =
+          /^\d{2,12}$/.test(firstToken) ||
+          (
+            items.length === 1 &&
+            /^\d{4,}\s+/.test(firstToken)
+          );
+
+        if (
+          isPotentialArticle &&
+          !fullLine.includes('Total General')
+        ) {
+
+          let rowData: string[] = [];
+
+          if (
+            items.length === 1 &&
+            firstToken.includes('  ')
+          ) {
+
+            rowData = firstToken
+              .split(/\s{2,}/)
+              .filter(s => s.length > 0);
+
+          } else {
+
+            let currentCell = items[0].str;
+
+            let lastX =
+              items[0].transform[4] +
+              (items[0].width || 0);
+
+            for (let j = 1; j < items.length; j++) {
+
+              const it = items[j];
+
+              const gap =
+                it.transform[4] - lastX;
+
+              if (
+                gap > (it.height || 8) * 0.35
+              ) {
+
+                rowData.push(
+                  currentCell.trim()
+                );
+
+                currentCell = it.str;
+
+              } else {
+
+                currentCell +=
+                  (currentCell.endsWith(' ')
+                    ? ''
+                    : ' ') + it.str;
+              }
+
+              lastX =
+                it.transform[4] +
+                (it.width || 0);
+            }
+
+            rowData.push(
+              currentCell.trim()
+            );
+          }
+
+          if (rowData.length >= 3) {
+
+            const numCount = rowData.filter(
+              s => /[0-9]/.test(s)
+            ).length;
+
+            if (
+              numCount >= 2 ||
+              rowData[0].length > 4
+            ) {
+
+              rawDataRows.push(
+                structuredClone([
+                  currentFamilia,
+                  currentClasificacion,
+                  ...rowData
+                ])
+              );
+            }
+          }
+        }
+      });
+
+    updateProgress(
+      40 + (i / totalPages) * 10,
+      `Detectando tablas pág ${i + 1}...`,
+      undefined,
+      pId,
+      signal
+    );
+  }
+}
+
+// ===============================================
+      // FASE 3 – MAPEO ESTRICTO DE COLUMNAS
+      // ===============================================
+      if (latestProcessRef.current !== pId) return;
+      updateProgress(60, "FASE 3: Aplicando mapeo estricto de columnas contables...", 3);
+      
+      const mapped = rawDataRows.map(raw => {
         const fam = raw[0];
         const clas = raw[1];
         const data = raw.slice(2);
-
+        
         const articulo = data[0] || '';
         const descripcion = data[1] || '';
-
-        const unidad =
-          data.find(c =>
-            /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(c.trim())
-          ) || 'UND';
-
-        const motivo =
-          data.find(c =>
-            /^\d{2}$/.test(c.trim()) &&
-            c !== articulo
-          ) || '';
-
+        const unidad = data.find(c => /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(c.trim())) || 'UND';
+        const motivo = data.find(c => /^\d{2}$/.test(c.trim()) && c !== articulo) || '';
+        
         const allNumbers = data.slice(2)
-          .map(c => ({
-            original: c,
-            value: cleanNumber(c),
-            isUnit: /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(c.trim())
-          }))
+          .map(c => ({ original: c, value: cleanNumber(c), isUnit: /^(UD|PCS|CAJA|KG|LBS|GR|UNID|UND)$/i.test(c.trim()) }))
           .filter(obj => !obj.isUnit)
-          .map(obj => obj.value);
+          .map(obj => obj.value)
+          .filter((v, idx) => v !== 0 || /^[0]$/.test(data.slice(2)[idx]?.trim() || ""));
 
-        let fis = 0;
-        let teo = 0;
-        let cos = 0;
-        let dif = 0;
-        let fisRD = 0;
-        let teoRD = 0;
-        let ajRD = 0;
-
-        const nums = allNumbers;
+        let fis = 0, teo = 0, cos = 0, dif = 0, fisRD = 0, teoRD = 0, ajRD = 0;
+        let motVal = motivo ? cleanNumber(motivo) : (allNumbers[0] || 0);
+        
+        const nums = allNumbers.filter(n => Math.abs(n - cleanNumber(articulo)) > 0.1 || n === 29 || n === 19);
 
         if (nums.length >= 3) {
-
-          fis = nums[1] || 0;
-          teo = nums[2] || 0;
-          cos = nums[3] || 0;
-          dif = nums[4] || 0;
-          fisRD = nums[5] || 0;
-          teoRD = nums[6] || 0;
-          ajRD = nums[7] || 0;
+          const costoIdx = nums.findIndex((v, i) => i > 0 && (Math.abs(v % 1) > 0.001 || (v > 100 && i < 5)));
+          
+          if (costoIdx === 2) {
+            teo = nums[1]; cos = nums[2]; dif = nums[3] || 0;
+            fisRD = nums[4] || 0; teoRD = nums[5] || 0; ajRD = nums[6] || 0;
+          } else if (costoIdx >= 3) {
+            fis = nums[1]; teo = nums[2]; cos = nums[3]; dif = nums[4] || 0;
+            fisRD = nums[5] || 0; teoRD = nums[6] || 0; ajRD = nums[7] || 0;
+          } else {
+            fis = nums[1] || 0; teo = nums[2] || 0; cos = nums[3] || 0;
+            dif = nums[4] || 0; fisRD = nums[5] || 0; teoRD = nums[6] || 0; ajRD = nums[7] || 0;
+          }
         }
 
         return {
-          articulo,
-          descripcion,
-          unidad,
-          motivo,
-          fisico: fis,
-          teorico: teo,
-          costo_unitario: cos,
-          diferencia_unidades: dif,
-          fisico_rd: fisRD,
-          teorico_rd: teoRD,
-          ajuste_rd: ajRD,
-          familia: fam,
-          clasificacion: clas
+          articulo, descripcion, unidad, motivo: motVal.toString(),
+          fisico: fis, teorico: teo, costo_unitario: cos,
+          diferencia_unidades: dif, fisico_rd: fisRD, teorico_rd: teoRD, ajuste_rd: ajRD,
+          familia: fam, clasificacion: clas
         };
       });
+      // END FASE 3
 
-      const final = mapped
-        .map(item => {
+      // FASE 4 - CÁLCULO
+      if (latestProcessRef.current !== pId) return;
+      updateProgress(80, "FASE 4: Verificación de cálculos y divergencias RD$...", 4);
+      const final = mapped.map(item => {
+        const calcDifUnidades = item.fisico - item.teorico;
+        const calcAjusteRD = calcDifUnidades * item.costo_unitario;
+        return {
+          ...item,
+          diferencia_unidades: item.diferencia_unidades !== 0 ? item.diferencia_unidades : calcDifUnidades,
+          ajuste_rd: item.ajuste_rd !== 0 ? item.ajuste_rd : calcAjusteRD
+        };
+      }).filter(i => i.articulo.length > 2);
 
-          const calcDifUnidades =
-            item.fisico - item.teorico;
-
-          const calcAjusteRD =
-            calcDifUnidades *
-            item.costo_unitario;
-
-          return {
-            ...item,
-            diferencia_unidades:
-              item.diferencia_unidades !== 0
-                ? item.diferencia_unidades
-                : calcDifUnidades,
-
-            ajuste_rd:
-              item.ajuste_rd !== 0
-                ? item.ajuste_rd
-                : calcAjusteRD
-          };
-        })
-        .filter(i => i.articulo.length > 2);
-
-      updateProgress(
-        95,
-        "FASE 5: Procesando índice de confiabilidad...",
-        5,
-        pId,
-        signal
-      );
-
+      // FASE 5
+      if (latestProcessRef.current !== pId) return;
+      updateProgress(95, "FASE 5: Procesando índice de confiabilidad...", 5);
+      
       if (final.length > 0) {
-
-        // ✅ CAMBIO
-        if (
-          latestProcessRef.current === pId &&
-          !signal.aborted
-        ) {
-
-          // ✅ CAMBIO
-          setInventoryData(
-            structuredClone(final)
-          );
-
-          updateProgress(
-            100,
-            "FASE 6: Auditoría finalizada.",
-            6,
-            pId,
-            signal
-          );
-
-          showToast(
-            "Auditoría completada exitosamente.",
-            "success"
-          );
+        if (latestProcessRef.current === pId) {
+          // ✅ CAMBIO: Clonado profundo antes del renderizado final para asegurar aislamiento total
+          setState(prev => ({ ...prev, inventoryData: [...final] }));
+          updateProgress(100, "FASE 6: Auditoría finalizada.", 6);
+          showToast("Auditoría completada exitosamente.", "success");
         }
-
       } else {
-
-        throw new Error(
-          "No se pudo extraer una tabla de inventario válida."
-        );
+        throw new Error("No se pudo extraer una tabla de inventario válida.");
       }
-
     } catch (err: any) {
-
-      // ✅ CAMBIO
-      if (signal.aborted) {
-        console.log('Proceso cancelado');
-        return;
+      if (latestProcessRef.current === pId) {
+        console.error(err);
+        showToast(err.message || "Error en proceso contable.", "error");
       }
-
-      console.error(err);
-
-      showToast(
-        err.message || "Error en proceso contable.",
-        "error"
-      );
-
     } finally {
-
-      // ✅ CAMBIO
-      latestProcessRef.current = -1;
-
-      // ✅ CAMBIO
-      if (workerRef.current) {
-        try {
-          await workerRef.current.terminate();
-        } catch (e) {}
-
-        workerRef.current = null;
+      // ✅ CAMBIO: Verificación de ID en limpieza de estado
+      if (latestProcessRef.current === pId) {
+        setState(prev => ({ ...prev, isProcessing: false }));
       }
-
-      // ✅ CAMBIO
-      if (loadingTask) {
-        try {
-          loadingTask.destroy?.();
-        } catch (e) {}
-      }
-
-      // ✅ CAMBIO
+      // ✅ CAMBIO: Limpieza estricta de recursos PDF
       if (pdf) {
-        try {
-          await pdf.destroy();
-        } catch (e) {}
+        try { pdf.destroy(); } catch(e) {}
       }
-
-      // ✅ CAMBIO
-      pdfRef.current = null;
-
-      setState(prev => {
-
-        if (prev.processingId !== pId) {
-          return prev;
-        }
-
-        return {
-          ...prev,
-          isProcessing: false
-        };
-      });
+      if (worker) {
+        try { worker.terminate(); } catch(e) {}
+      }
     }
   };
 
-
-
-  // ====================================================================================================================================================================================
+  const handleFile = (file: File) => {
+    if (file.type !== 'application/pdf') {
+      showToast("Por favor, selecciona un reporte de inventario en PDF.", "error");
+      return;
+    }
     
+    // Clear input to allow re-uploading same file / help memory
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    
+    // We don't call setFile(file) here because processPDF handles it
+    processPDF(file);
+  };
 
-
-
-  
   const downloadExcel = () => {
     if (state.inventoryData.length === 0 || !state.file) return;
     try {
