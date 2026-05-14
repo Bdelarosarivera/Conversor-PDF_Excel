@@ -62,6 +62,10 @@ export default function App() {
   const [inventoryData, setInventoryData] = useState<InventoryRow[]>([]);
   const latestProcessRef = useRef<number>(0);
   
+// ✅ CAMBIO: AbortController para cancelar procesos anteriores
+  const abortRef = useRef<AbortController | null>(null);
+
+  
   const [formulario, setFormulario] = useState<FormularioAjuste>({
     fecha: new Date().toLocaleDateString(),
     realizadoPor: 'Generado por Sistema',
@@ -106,6 +110,14 @@ export default function App() {
   };
 
   const processPDF = async (pdfFile: File) => {
+    
+// ✅ CAMBIO: cancelar proceso anterior REALMENTE
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = new AbortController();
+    const { signal } = abortRef.current;
+
+
+    
     const pId = Date.now();
     latestProcessRef.current = pId;
     console.log(`[AUDITOR] Iniciando proceso ID ${pId} para: ${pdfFile.name}`);
@@ -142,6 +154,10 @@ export default function App() {
       
       const totalPages = pdf.numPages;
       setFile(pdfFile); // Set file now that we know we are processing it successfully
+
+
+
+      
       
       // ===============================================
       // FASE 1 – LECTURA Y OCR (OBLIGATORIA)
@@ -209,6 +225,16 @@ export default function App() {
       setState(prev => ({ ...prev, rawPageTexts: pageTexts }));
       // END FASE 1
 
+
+      // ✅ CAMBIO: aislar rawDataRows (NO usar referencia directa)
+      let rawDataRows: string[][] = [];
+      rawDataRows.push(...ocrDataRows.map(r => [...r]));
+
+      // ✅ CAMBIO: snapshot inmutable antes de mapear
+      const snapshotRows = rawDataRows.map(r => [...r]);
+
+      
+      
       // ===============================================
       // FASE 2 – DETECCIÓN DE TABLAS
       // ===============================================
@@ -292,6 +318,9 @@ export default function App() {
       }
       // END FASE 2
 
+
+
+      
       // ===============================================
       // FASE 3 – MAPEO ESTRICTO DE COLUMNAS
       // ===============================================
@@ -412,15 +441,22 @@ export default function App() {
         showToast(err.message || "Error en proceso contable.", "error");
       }
     } finally {
-      if (latestProcessRef.current === pId) {
-        setState(prev => ({ ...prev, isProcessing: false }));
-      }
+
+      
+   
+ // ✅ CAMBIO: limpieza real
+      if (abortRef.current?.signal === signal) abortRef.current = null;
       if (pdf) {
-        try { pdf.destroy(); } catch(e) {}
+        try { pdf.destroy(); } catch {}
       }
+      setState(prev => ({ ...prev, isProcessing: false }));
     }
   };
 
+
+
+
+  
   const handleFile = (file: File) => {
     if (file.type !== 'application/pdf') {
       showToast("Por favor, selecciona un reporte de inventario en PDF.", "error");
